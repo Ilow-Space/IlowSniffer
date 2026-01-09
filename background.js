@@ -82,14 +82,15 @@ async function generateThumbnailOffscreen(videoUrl) {
  * 3. Removes common dynamic segments like /manifest/ or /hls/
  */
 function generateVideoKey(url) {
-  try {
-    const urlObj = new URL(url);
-    // Use only Hostname + Pathname (ignore ?token=xyz)
-    const rawPath = urlObj.hostname + urlObj.pathname;
-    return rawPath.toLowerCase();
-  } catch (e) {
-    return url;
-  }
+  // try {
+  //   const urlObj = new URL(url);
+  //   // Use only Hostname + Pathname (ignore ?token=xyz)
+  //   const rawPath = urlObj.hostname + urlObj.pathname;
+  //   return rawPath.toLowerCase();
+  // } catch (e) {
+  //   return url;
+  // }
+  return url;
 }
 
 // --- 1. CAPTURE HEADERS ---
