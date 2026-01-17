@@ -1,4 +1,7 @@
 // ======================================================================
+// FILE PATH: C:\Users\User\OneDrive\Projects\ilow\IlowAgent\popup.js
+// ======================================================================
+// ======================================================================
 // POPUP.JS - Logic Controller
 // ======================================================================
 
@@ -12,6 +15,12 @@ const CONFIG = {
 };
 
 const Utils = {
+  getCleanVideoUrl: (url) => {
+    if (!url) return "";
+    const videoExtRegex = /(.*?\.(mp4|mkv|mov|avi|m3u8))/i;
+    const match = url.match(videoExtRegex);
+    return match && match[1] ? match[1] : url.split("?")[0].split("#")[0];
+  },
   formatTime: (seconds) => {
     if (!seconds) return "00:00:00";
     const h = Math.floor(seconds / 3600);
@@ -41,13 +50,10 @@ class ApiService {
 
   async initAuth() {
     return new Promise((resolve) => {
-      chrome.cookies.get(
-        { url: CONFIG.COOKIE_DOMAIN, name: CONFIG.AUTH_COOKIE },
-        (cookie) => {
-          this.token = cookie ? cookie.value : null;
-          resolve(!!this.token);
-        }
-      );
+      chrome.cookies.get({ url: CONFIG.COOKIE_DOMAIN, name: CONFIG.AUTH_COOKIE }, (cookie) => {
+        this.token = cookie ? cookie.value : null;
+        resolve(!!this.token);
+      });
     });
   }
 
@@ -67,28 +73,28 @@ class ApiService {
 
   async searchLibrary(query, type) {
     if (!this.token) return [];
-    return this._fetch(
-      `${
-        CONFIG.API_BASE
-      }/library/search?type=${type}&query=${encodeURIComponent(query)}`
-    );
+    return this._fetch(`${CONFIG.API_BASE}/library/search?type=${type}&query=${encodeURIComponent(query)}`);
   }
 
   async searchTMDB(query, type) {
     if (!this.token) return [];
-    return this._fetch(
-      `${CONFIG.API_BASE}/tmdb/search?type=${type}&query=${encodeURIComponent(
-        query
-      )}`
-    );
+    return this._fetch(`${CONFIG.API_BASE}/tmdb/search?type=${type}&query=${encodeURIComponent(query)}`);
   }
 
   async getActiveTasks() {
     if (!this.token) return [];
     try {
-      const data = await this._fetch(`${CONFIG.API_BASE}/tasks/active`);
-      return [...(data.downloads || []), ...(data.uploads || [])];
+      // Fetch from https://media.ilow.io/api/tasks/active
+      // Added cache: 'no-store' to ensure proactive fetching without browser caching
+      const data = await this._fetch(`${CONFIG.API_BASE}/tasks/active`, { cache: "no-store" });
+
+      // Expected format: {"downloads":[],"uploads":[]}
+      const downloads = Array.isArray(data.downloads) ? data.downloads : [];
+      const uploads = Array.isArray(data.uploads) ? data.uploads : [];
+
+      return [...downloads, ...uploads];
     } catch (e) {
+      console.warn("Failed to fetch active tasks", e);
       return [];
     }
   }
@@ -109,14 +115,8 @@ class UIRenderer {
   }
 
   renderError(title, msg, actionBtn = null) {
-    this.app.innerHTML = Templates.errorState(
-      title,
-      msg,
-      !!actionBtn,
-      actionBtn?.text
-    );
-    if (actionBtn)
-      document.getElementById("btn-err-action").onclick = actionBtn.onClick;
+    this.app.innerHTML = Templates.errorState(title, msg, !!actionBtn, actionBtn?.text);
+    if (actionBtn) document.getElementById("btn-err-action").onclick = actionBtn.onClick;
   }
 
   renderYouTube() {
@@ -131,40 +131,67 @@ class UIRenderer {
 
     if (videos.length === 0) {
       this.app.innerHTML = headerHtml + Templates.emptyList();
+      // Safely attach refresh handler
+      const refreshBtn = document.getElementById("btn-refresh-page");
+      if (refreshBtn) refreshBtn.onclick = this.handlers.onRefreshPage;
+      // Also attach clear handler if it exists in subnav (though list is empty, good practice)
+      const clearBtn = document.getElementById("btn-clear");
+      if (clearBtn) clearBtn.onclick = this.handlers.onClearList;
     } else {
       const listHtml = videos
-        .map((v, i) =>
-          Templates.videoCard(
+        .map((v, i) => {
+          const cleanDisplayUrl = Utils.getCleanVideoUrl(v.url);
+          return Templates.videoCard(
             v,
             i,
             Utils.formatTime(v.duration),
             Utils.formatResolution(v.resolution),
-            isAuthenticated // Pass auth state to template
-          )
-        )
+            isAuthenticated,
+            cleanDisplayUrl,
+          );
+        })
         .join("");
 
-      this.app.innerHTML = headerHtml + listHtml;
+      // Wrap listHtml in scrollable container
+      this.app.innerHTML =
+        headerHtml +
+        `<div style="flex: 1; overflow-y: auto; min-height: 0; padding-right: 2px; padding-bottom: 10px;">${listHtml}</div>`;
 
       document
         .querySelectorAll(".select-video-btn")
-        .forEach(
-          (btn) =>
-            (btn.onclick = () =>
-              this.handlers.onSelectVideo(btn.getAttribute("data-index")))
-        );
+        .forEach((btn) => (btn.onclick = () => this.handlers.onSelectVideo(btn.getAttribute("data-index"))));
       document
         .querySelectorAll(".copy-trigger")
-        .forEach(
-          (el) =>
-            (el.onclick = () =>
-              this.handlers.onCopyUrl(el.getAttribute("data-url"), el))
-        );
-      document.getElementById("btn-clear").onclick = this.handlers.onClearList;
+        .forEach((el) => (el.onclick = () => this.handlers.onCopyUrl(el.getAttribute("data-url"), el)));
+
+      document.querySelectorAll(".btn-download-video").forEach((btn) => {
+        btn.onclick = (e) => {
+          // Prevent triggering parent clicks if any
+          e.stopPropagation();
+
+          const url = btn.getAttribute("data-url");
+          const filename = btn.getAttribute("data-filename");
+
+          // Visual feedback
+          btn.innerHTML = `...`;
+          btn.style.opacity = "0.7";
+
+          this.handlers.onDownloadVideo(url, filename);
+
+          // Reset icon after delay
+          setTimeout(() => {
+            btn.innerHTML = ICONS.DOWNLOAD; // Make sure ICONS is imported/accessible or pass it
+            btn.style.opacity = "1";
+          }, 2000);
+        };
+      });
+
+      const clearBtn = document.getElementById("btn-clear");
+      if (clearBtn) clearBtn.onclick = this.handlers.onClearList;
     }
 
-    document.getElementById("btn-show-tasks").onclick =
-      this.handlers.onViewTasks;
+    const tasksBtn = document.getElementById("btn-show-tasks");
+    if (tasksBtn) tasksBtn.onclick = this.handlers.onViewTasks;
   }
 
   renderSearch(state) {
@@ -176,44 +203,26 @@ class UIRenderer {
       : `<div style="font-family:'JetBrains Mono'; font-size:9px; color:var(--accent-primary); margin-bottom:8px;">// GLOBAL_DATABASE_MATCH</div>`;
 
     const resultsHtml = state.searchResults
-      .map((r, idx) =>
-        Templates.searchResultItem(
-          r,
-          idx,
-          state.selectedMeta?.id === r.id,
-          CONFIG.TMDB_IMG_BASE
-        )
-      )
+      .map((r, idx) => Templates.searchResultItem(r, idx, state.selectedMeta?.id === r.id, CONFIG.TMDB_IMG_BASE))
       .join("");
 
-    this.app.innerHTML = Templates.searchContainer(
-      state,
-      headerHtml,
-      sourceLabelHtml,
-      resultsHtml
-    );
+    this.app.innerHTML = Templates.searchContainer(state, headerHtml, sourceLabelHtml, resultsHtml);
 
     document.getElementById("btn-back").onclick = this.handlers.onBack;
     document.getElementById("btn-go-search").onclick = () =>
       this.handlers.onGlobalSearch(document.getElementById("inp-search").value);
-    document.getElementById("inp-search").oninput = (e) =>
-      this.handlers.onSearchInput(e.target.value);
-    document.getElementById("set-movie").onclick = () =>
-      this.handlers.onSetType("movie");
-    document.getElementById("set-tv").onclick = () =>
-      this.handlers.onSetType("tv");
+    document.getElementById("inp-search").oninput = (e) => this.handlers.onSearchInput(e.target.value);
+    document.getElementById("set-movie").onclick = () => this.handlers.onSetType("movie");
+    document.getElementById("set-tv").onclick = () => this.handlers.onSetType("tv");
 
     if (state.mediaType === "tv") {
-      document.getElementById("inp-season").onchange = (e) =>
-        this.handlers.onUpdateEp(e.target.value, null);
-      document.getElementById("inp-episode").onchange = (e) =>
-        this.handlers.onUpdateEp(null, e.target.value);
+      document.getElementById("inp-season").onchange = (e) => this.handlers.onUpdateEp(e.target.value, null);
+      document.getElementById("inp-episode").onchange = (e) => this.handlers.onUpdateEp(null, e.target.value);
     }
 
     document.getElementById("btn-ingest").onclick = this.handlers.onIngest;
     document.querySelectorAll(".search-result").forEach((el) => {
-      el.onclick = () =>
-        this.handlers.onSelectMeta(el.getAttribute("data-idx"));
+      el.onclick = () => this.handlers.onSelectMeta(el.getAttribute("data-idx"));
     });
   }
 
@@ -231,8 +240,7 @@ class UIRenderer {
 
   renderSuccess() {
     this.app.innerHTML = Templates.successScreen();
-    document.getElementById("btn-view-tasks").onclick =
-      this.handlers.onViewTasks;
+    document.getElementById("btn-view-tasks").onclick = this.handlers.onViewTasks;
     document.getElementById("btn-back").onclick = this.handlers.onBack;
   }
 }
@@ -242,7 +250,7 @@ class AppController {
   constructor() {
     this.api = new ApiService();
     this.ui = new UIRenderer("app", this.createHandlers());
-    this.isAuthenticated = false; // Store auth state
+    this.isAuthenticated = false;
     this.state = {
       view: "list",
       videos: [],
@@ -295,8 +303,16 @@ class AppController {
         if (e) this.state.episode = e;
       },
       onIngest: () => this.triggerIngest(),
+      onDownloadVideo: (url, filename) => {
+        chrome.runtime.sendMessage({
+          action: "download_video",
+          url: url,
+          filename: filename,
+        });
+      },
       onCopyUrl: (url, el) => {
-        navigator.clipboard.writeText(url);
+        const cleanUrlToCopy = Utils.getCleanVideoUrl(url);
+        navigator.clipboard.writeText(cleanUrlToCopy);
         const originalText = el.innerText;
         el.innerText = "✅ COPIED";
         el.style.color = "var(--status-success)";
@@ -306,6 +322,11 @@ class AppController {
           el.style.color = "";
           el.style.borderColor = "";
         }, 1200);
+      },
+      onRefreshPage: () => {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs[0]?.id) chrome.tabs.reload(tabs[0].id);
+        });
       },
     };
   }
@@ -318,30 +339,30 @@ class AppController {
       if (url && (url.includes("youtube.com") || url.includes("youtu.be"))) {
         this.state.view = "youtube";
         this.render();
-        return; // Stop here, show specific message
+        return;
       }
     }
 
-    // 2. Check Auth (Soft Check - allow browsing if failed)
+    // 2. Check Auth
     this.isAuthenticated = await this.api.initAuth();
+
+    this.render();
 
     // 3. Start Polling
     this.fetchData();
+    // Proactive Polling: 2 seconds interval
     setInterval(() => this.fetchData(), 2000);
   }
 
   async fetchData() {
     // Only fetch tasks if authenticated
-    const newTasks = this.isAuthenticated
-      ? await this.api.getActiveTasks()
-      : [];
+    const newTasks = this.isAuthenticated ? await this.api.getActiveTasks() : [];
 
     if (this.state.view === "list") {
       chrome.runtime.sendMessage({ action: "get_videos" }, (newVideos) => {
         if (!newVideos) newVideos = [];
 
-        const videosChanged =
-          JSON.stringify(this.state.videos) !== JSON.stringify(newVideos);
+        const videosChanged = JSON.stringify(this.state.videos) !== JSON.stringify(newVideos);
         const tasksCountChanged = this.state.tasks.length !== newTasks.length;
 
         if (videosChanged || tasksCountChanged) {
@@ -353,8 +374,7 @@ class AppController {
         }
       });
     } else if (this.state.view === "tasks") {
-      const tasksChanged =
-        JSON.stringify(this.state.tasks) !== JSON.stringify(newTasks);
+      const tasksChanged = JSON.stringify(this.state.tasks) !== JSON.stringify(newTasks);
       if (tasksChanged) {
         this.state.tasks = newTasks;
         this.render();
@@ -370,7 +390,6 @@ class AppController {
   }
 
   startMatchFlow(index) {
-    // --- AUTH GATEKEEPER ---
     if (!this.isAuthenticated) {
       this.ui.renderError(
         "Authentication Required",
@@ -378,14 +397,13 @@ class AppController {
         {
           text: "Check Login Status",
           onClick: () => {
-            // Re-check auth
             this.api.initAuth().then((isAuth) => {
               this.isAuthenticated = isAuth;
-              if (isAuth) this.startMatchFlow(index); // Retry if success
+              if (isAuth) this.startMatchFlow(index);
               else alert("Still not logged in.");
             });
           },
-        }
+        },
       );
       return;
     }
@@ -401,8 +419,6 @@ class AppController {
     this.render();
     if (query) this.performLocalSearch(query);
   }
-
-  // ... [performLocalSearch, performGlobalSearch, selectMetaItem, triggerIngest REMAIN SAME] ...
 
   async performLocalSearch(query) {
     if (!query) return;
@@ -463,13 +479,22 @@ class AppController {
   async triggerIngest() {
     try {
       this.ui.app.innerHTML = `<div class="empty-state" style="padding:40px;">// INITIATING_UPLINK...</div>`;
-      await this.api.triggerDownload({
-        url: this.state.selectedVideo.url,
+
+      const cleanUrl = Utils.getCleanVideoUrl(this.state.selectedVideo.url);
+
+      const payload = {
+        url: cleanUrl,
         tmdbId: this.state.selectedMeta.tmdb_id || this.state.selectedMeta.id,
         mediaType: this.state.mediaType,
-        season: parseInt(this.state.season),
-        episode: parseInt(this.state.episode),
-      });
+      };
+
+      if (this.state.mediaType === "tv") {
+        payload.season = parseInt(this.state.season);
+        payload.episode = parseInt(this.state.episode);
+      }
+
+      await this.api.triggerDownload(payload);
+
       this.state.view = "success";
       this.render();
     } catch (e) {
@@ -485,11 +510,7 @@ class AppController {
 
   render() {
     if (this.state.view === "list")
-      this.ui.renderVideoList(
-        this.state.videos,
-        this.state.tasks.length,
-        this.isAuthenticated
-      );
+      this.ui.renderVideoList(this.state.videos, this.state.tasks.length, this.isAuthenticated);
     else if (this.state.view === "youtube") this.ui.renderYouTube();
     else if (this.state.view === "search") this.ui.renderSearch(this.state);
     else if (this.state.view === "tasks") this.ui.renderTasks(this.state.tasks);

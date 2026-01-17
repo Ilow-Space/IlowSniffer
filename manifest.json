@@ -2,14 +2,7 @@
   "manifest_version": 3,
   "name": "Ilöw Sniffer",
   "version": "1.3",
-  "permissions": [
-    "webRequest",
-    "storage",
-    "scripting",
-    "activeTab",
-    "cookies",
-    "offscreen"
-  ],
+  "permissions": ["webRequest", "storage", "scripting", "activeTab", "cookies", "offscreen", "downloads"],
   "host_permissions": ["<all_urls>", "https://media.ilow.io/*"],
   "background": {
     "service_worker": "background.js",

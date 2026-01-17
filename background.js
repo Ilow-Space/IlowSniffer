@@ -3,12 +3,9 @@
 // Strict Deduplication & Auto-Cleanup
 // ======================================================================
 
-import {
-  IGNORED_EXTENSIONS,
-  IGNORED_SEGMENTS,
-  OFFSCREEN_PATH,
-} from "./constants.js";
+import { IGNORED_EXTENSIONS, IGNORED_SEGMENTS, OFFSCREEN_PATH, MESSAGE_ACTIONS } from "./constants.js";
 import { logger } from "./logger.js";
+import { downloadHLS } from "./hls_downloader.js";
 
 // --- CONFIG ---
 const VIDEO_TTL = 60 * 60 * 1000; // 1 Hour (Auto-remove old videos)
@@ -75,36 +72,29 @@ async function generateThumbnailOffscreen(videoUrl) {
 
 // --- UTILS ---
 
-/**
- * Generates a STRICT unique key.
- * 1. Removes Query Parameters (?)
- * 2. Removes Hash Fragments (#)
- * 3. Removes common dynamic segments like /manifest/ or /hls/
- */
 function generateVideoKey(url) {
-  // try {
-  //   const urlObj = new URL(url);
-  //   // Use only Hostname + Pathname (ignore ?token=xyz)
-  //   const rawPath = urlObj.hostname + urlObj.pathname;
-  //   return rawPath.toLowerCase();
-  // } catch (e) {
-  //   return url;
-  // }
   return url;
+}
+
+// Helper to extract clean path for comparison (ignores subdomain/host differences)
+function getUrlPath(urlStr) {
+  try {
+    const url = new URL(urlStr);
+    return url.pathname; // Returns "/folder/video.mp4" ignoring "https://sub.domain.com"
+  } catch (e) {
+    return urlStr;
+  }
 }
 
 // --- 1. CAPTURE HEADERS ---
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
-    if (
-      details.url.match(IGNORED_EXTENSIONS) ||
-      IGNORED_SEGMENTS.some((s) => details.url.includes(s))
-    )
-      return;
+    // IGNORE ILOW DOMAIN & OTHER EXTENSIONS
+    if (details.url.includes(".ilow.io")) return;
+    if (details.url.match(IGNORED_EXTENSIONS) || IGNORED_SEGMENTS.some((s) => details.url.includes(s))) return;
 
     let headerObj = {};
-    if (details.requestHeaders)
-      details.requestHeaders.forEach((h) => (headerObj[h.name] = h.value));
+    if (details.requestHeaders) details.requestHeaders.forEach((h) => (headerObj[h.name] = h.value));
 
     requestCache[details.requestId] = {
       url: details.url,
@@ -115,7 +105,7 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
     };
   },
   { urls: ["<all_urls>"] },
-  ["requestHeaders", "extraHeaders"]
+  ["requestHeaders", "extraHeaders"],
 );
 
 // --- 2. DETECT VIDEO ---
@@ -126,9 +116,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     const requestInfo = requestCache[details.requestId];
     if (!requestInfo) return;
 
-    const typeHeader = details.responseHeaders?.find(
-      (h) => h.name.toLowerCase() === "content-type"
-    );
+    const typeHeader = details.responseHeaders?.find((h) => h.name.toLowerCase() === "content-type");
     const isVideoType =
       typeHeader &&
       (typeHeader.value.toLowerCase().startsWith("video/") ||
@@ -151,7 +139,7 @@ chrome.webRequest.onHeadersReceived.addListener(
         await Storage.update("capturedVideos", (videos) => {
           const now = Date.now();
 
-          // 1. GARBAGE COLLECTION (Remove old videos)
+          // 1. GARBAGE COLLECTION
           for (const k in videos) {
             if (now - videos[k].capturedAt > VIDEO_TTL) {
               delete videos[k];
@@ -160,15 +148,12 @@ chrome.webRequest.onHeadersReceived.addListener(
 
           // 2. CHECK EXACT DUPLICATE
           if (videos[uniqueKey]) {
-            skipAdding = true; // Already exists
+            skipAdding = true;
             return videos;
           }
 
-          // 3. CHECK FUZZY DUPLICATE (Path match)
-          // If we already have "movie.mp4", don't add "movie.mp4?token=2"
-          const existingKey = Object.keys(videos).find(
-            (k) => k.includes(uniqueKey) || uniqueKey.includes(k)
-          );
+          // 3. STORAGE LEVEL DEDUPLICATION (Keep strict)
+          const existingKey = Object.keys(videos).find((k) => k === uniqueKey);
           if (existingKey) {
             skipAdding = true;
             return videos;
@@ -195,7 +180,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     }
   },
   { urls: ["<all_urls>"] },
-  ["responseHeaders"]
+  ["responseHeaders"],
 );
 
 // --- 3. METADATA STRATEGY ---
@@ -220,10 +205,30 @@ async function processMetadata(videoKey, finalUrl) {
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.action === "get_videos") {
     Storage.get("capturedVideos").then((videos) => {
-      // Return sorted list
-      const list = Object.values(videos).sort(
-        (a, b) => b.capturedAt - a.capturedAt
-      );
+      const allVideos = Object.values(videos);
+
+      // Separate videos that have successfully fetched metadata
+      const goodVideos = allVideos.filter((v) => v.duration > 0 && v.thumbnail);
+
+      // Filter logic
+      const filteredList = allVideos.filter((video) => {
+        // 1. If this video has metadata, we definitely keep it
+        if (video.duration > 0 && video.thumbnail) return true;
+
+        // 2. If this video is "bad" (no metadata), check if a "good" version exists
+        // We compare ONLY the URL Pathname to ignore domain differences
+        // (e.g., actinium.vdbmate vs vdbmate)
+        const myPath = getUrlPath(video.url);
+
+        const hasBetterDuplicate = goodVideos.some((goodVideo) => {
+          return getUrlPath(goodVideo.url) === myPath;
+        });
+
+        // If a better version exists, hide this one. If not, keep showing it (it might be loading)
+        return !hasBetterDuplicate;
+      });
+
+      const list = filteredList.sort((a, b) => b.capturedAt - a.capturedAt);
       sendResponse(list);
     });
     return true;
@@ -233,7 +238,53 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     sendResponse({ success: true });
     return true;
   }
+  // NEW: Handle Download
+  if (req.action === MESSAGE_ACTIONS.DOWNLOAD_VIDEO) {
+    handleVideoDownload(req.url, req.filename);
+    sendResponse({ success: true, message: "Download started in background" });
+    return true;
+  }
 });
+
+async function handleVideoDownload(url, suggestedName) {
+  try {
+    console.log(`[Download] Starting: ${url}`);
+
+    const isHls = url.includes(".m3u8") || url.includes("mpegurl");
+
+    if (isHls) {
+      // 1. Process HLS
+      const blob = await downloadHLS(url);
+
+      // 2. Create Object URL (Base64 is safer for background to download api sometimes)
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      reader.onloadend = function () {
+        const base64data = reader.result;
+
+        // 3. Trigger Download
+        // Note: HLS segments are usually TS. We save as .ts
+        const filename = suggestedName.replace(/\.(m3u8|mp4|mkv)$/i, "") + ".ts";
+
+        chrome.downloads.download({
+          url: base64data,
+          filename: "IlowCaps/" + filename,
+          saveAs: false,
+        });
+      };
+    } else {
+      // Direct Download (MP4, MKV, etc)
+      chrome.downloads.download({
+        url: url,
+        filename: "IlowCaps/" + suggestedName,
+        saveAs: false,
+      });
+    }
+  } catch (e) {
+    console.error("[Download] Error:", e);
+    // Optional: Send error notification to user
+  }
+}
 
 // Clean Request Cache periodically
 setInterval(() => {

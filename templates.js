@@ -11,6 +11,7 @@ export const ICONS = {
   YOUTUBE: `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"></path><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02" fill="#ef4444"></polygon></svg>`,
   FILM: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>`,
   CLOCK: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`,
+  DOWNLOAD: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>`,
 };
 
 export const Templates = {
@@ -68,14 +69,38 @@ export const Templates = {
   `,
 
   // Horizontal Card Layout for Density
-  videoCard: (video, index, formattedDuration, resolutionText, isAuth) => {
+  videoCard: (video, index, formattedDuration, resolutionText, isAuth, cleanDisplayUrl) => {
     // Fallback if no thumbnail
     const thumbSrc =
       video.thumbnail ||
       "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMzIwIDE4MCI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsbD0iIzE4MTgxYiIvPjwvc3ZnPg==";
 
     return `
-    <div class="video-card animate-fade-in">
+    <div class="video-card animate-fade-in" style="position: relative;">
+      
+      <!-- DOWNLOAD BUTTON (Top Right) -->
+      <button class="icon-btn btn-download-video" 
+        data-url="${video.url}" 
+        data-filename="${cleanDisplayUrl.split("/").pop() || "video"}"
+        title="Download Video"
+        style="
+          position: absolute; 
+          top: 6px; 
+          right: 6px; 
+          z-index: 10; 
+          background: rgba(0,0,0,0.7); 
+          color: white; 
+          border: 1px solid rgba(255,255,255,0.2);
+          border-radius: 4px;
+          width: 26px; 
+          height: 26px;
+          display: flex; 
+          align-items: center; 
+          justify-content: center;
+          cursor: pointer;">
+        ${ICONS.DOWNLOAD}
+      </button>
+
       <div class="vid-layout">
         <img src="${thumbSrc}" class="vid-thumb">
         
@@ -90,10 +115,8 @@ export const Templates = {
             }
           </div>
           
-          <div class="vid-url copy-trigger" data-url="${
-            video.url
-          }" title="Click to copy stream URL">
-            ${video.url}
+          <div class="vid-url copy-trigger" data-url="${video.url}" title="Click to copy stream URL">
+            ${cleanDisplayUrl} 
           </div>
         </div>
       </div>
@@ -106,10 +129,15 @@ export const Templates = {
   },
 
   emptyList: () => `
-    <div class="empty-state">
+    <div class="empty-state" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px; min-height: 200px;">
       <div style="font-size:24px; opacity:0.3; margin-bottom:12px;">◎</div>
-      <div style="font-family:var(--font-mono); font-size:11px; margin-bottom:4px; color:var(--text-main);">SYSTEM_IDLE</div>
-      <div style="font-size:11px; color:var(--text-dim);">No media streams intercepted.</div>
+      <div style="font-family:var(--font-mono); font-size:11px; margin-bottom:8px; color:var(--text-main);">NO_SOURCES_FOUND</div>
+      <div style="font-size:11px; color:var(--text-dim); margin-bottom:16px; line-height:1.5;">
+        No media detected.<br>Refresh the page to capture active streams.
+      </div>
+      <button id="btn-refresh-page" class="btn secondary" style="width:auto; padding:8px 16px; cursor:pointer;">
+        REFRESH PAGE
+      </button>
     </div>
   `,
 
@@ -128,21 +156,14 @@ export const Templates = {
         </div>
         
         <div class="toggle-box">
-          <button class="toggle-opt ${
-            !isTv ? "active" : ""
-          }" id="set-movie">MOVIE</button>
-          <button class="toggle-opt ${
-            isTv ? "active" : ""
-          }" id="set-tv">TV SERIES</button>
+          <button class="toggle-opt ${!isTv ? "active" : ""}" id="set-movie">MOVIE</button>
+          <button class="toggle-opt ${isTv ? "active" : ""}" id="set-tv">TV SERIES</button>
         </div>
 
         ${sourceLabelHtml}
         
         <div style="height:210px; overflow-y:auto; padding-right:2px; margin-bottom:12px; border-top:1px solid transparent;">
-          ${
-            resultsHtml ||
-            '<div class="empty-state" style="padding:20px;">// NO_DATA_FOUND</div>'
-          }
+          ${resultsHtml || '<div class="empty-state" style="padding:20px;">// NO_DATA_FOUND</div>'}
         </div>
 
         ${
@@ -165,9 +186,7 @@ export const Templates = {
             : ""
         }
         
-        <button id="btn-ingest" class="btn" ${
-          !state.selectedMeta ? "disabled" : ""
-        }>
+        <button id="btn-ingest" class="btn" ${!state.selectedMeta ? "disabled" : ""}>
           EXECUTE INGEST
         </button>
       </div>
@@ -179,9 +198,7 @@ export const Templates = {
     const year = (r.release_date || r.first_air_date || "").substring(0, 4);
 
     return `
-    <div class="search-card search-result ${
-      isSelected ? "selected" : ""
-    }" data-idx="${idx}" style="cursor:pointer;">
+    <div class="search-card search-result ${isSelected ? "selected" : ""}" data-idx="${idx}" style="cursor:pointer;">
       <div class="search-res-layout">
         <img src="${posterSrc}" class="res-poster" onerror="this.style.opacity=0.3">
         <div class="res-info">
@@ -194,9 +211,7 @@ export const Templates = {
                 : `<span class="badge badge-tmdb">TMDB</span>`
             }
           </div>
-          <div class="res-desc">${
-            r.overview || "No description available."
-          }</div>
+          <div class="res-desc">${r.overview || "No description available."}</div>
         </div>
       </div>
     </div>
@@ -209,14 +224,14 @@ export const Templates = {
       task.status === "completed"
         ? 100
         : task.totalSize > 0
-        ? Math.round((task.bytesDownloaded / task.totalSize) * 100)
-        : 0;
+          ? Math.round((task.bytesDownloaded / task.totalSize) * 100)
+          : 0;
     const statusColor =
       task.status === "completed"
         ? "var(--status-success)"
         : task.error
-        ? "var(--status-error)"
-        : "var(--accent-primary)";
+          ? "var(--status-error)"
+          : "var(--accent-primary)";
 
     return `
     <div class="task-card animate-fade-in">

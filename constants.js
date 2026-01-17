@@ -1,8 +1,7 @@
 // Constants and Configuration for Ilöw Media Sniffer
 
 // Background Script Constants
-export const IGNORED_EXTENSIONS =
-  /\.(ts|m4s|mbn|vtt|srt|key|aac|png|jpg|gif|css|js|woff|woff2)(\?|$)/i;
+export const IGNORED_EXTENSIONS = /\.(ts|m4s|mbn|vtt|srt|key|aac|png|jpg|gif|css|js|woff|woff2)(\?|$)/i;
 export const IGNORED_SEGMENTS = ["seg-", "fragment-", "chunk-", "acl="];
 export const OFFSCREEN_PATH = "offscreen.html";
 export const RECENT_KEYS_TIMEOUT = 10000; // ms
@@ -23,4 +22,5 @@ export const MESSAGE_ACTIONS = {
   CLEAR_VIDEOS: "clear_videos",
   GENERATE_THUMBNAIL: "generate_thumbnail",
   GET_VIDEO_METADATA: "get_video_metadata",
+  DOWNLOAD_VIDEO: "download_video",
 };
