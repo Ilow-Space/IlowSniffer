@@ -1,8 +1,9 @@
 // ======================================================================
-// FILE PATH: C:\Users\User\OneDrive\Projects\ilow\IlowAgent\popup.js
+// FILE PATH: popup.js
 // ======================================================================
 
 import { Templates, ICONS } from "./templates.js";
+import { ProgressManager } from "./progress_manager.js";
 
 // ... [CONFIG and Utils object remain unchanged] ...
 const CONFIG = {
@@ -107,16 +108,12 @@ class ApiService {
   }
 }
 
-// ... [UIRenderer and AppController mostly unchanged, ensuring fetchData calls getActiveTasks] ...
-
 class UIRenderer {
   constructor(containerId, handlers) {
     this.app = document.getElementById(containerId);
     this.handlers = handlers;
     this.currentView = null;
   }
-
-  // ... [renderError, renderYouTube, renderVideoList, renderSearch remain unchanged] ...
 
   renderError(title, msg, actionBtn = null) {
     this.app.innerHTML = Templates.errorState(title, msg, !!actionBtn, actionBtn?.text);
@@ -130,9 +127,6 @@ class UIRenderer {
   }
 
   renderVideoList(videos, activeTaskCount, isAuthenticated, downloadProgressMap) {
-    // (Keep existing implementation from previous file)
-    // See previous file content for renderVideoList logic...
-    // Just abbreviated here to focus on changes.
     if (this.currentView !== "list") {
       const leftBtn = `<button id="btn-clear" class="icon-btn" title="Clear All">${ICONS.TRASH}</button>`;
       const rightBtn = `<button id="btn-show-tasks" class="btn secondary" style="width:auto; padding:6px 12px; font-size:10px;">${activeTaskCount} Active Tasks &rarr;</button>`;
@@ -177,32 +171,44 @@ class UIRenderer {
       const progress = downloadProgressMap[v.url] || 0;
       const existingCard = document.getElementById(uniqueId);
 
-      if (existingCard) {
-        const progBar = existingCard.querySelector(".js-progress-bar");
-        if (progBar) {
-          progBar.style.width = `${progress}%`;
-          progBar.style.opacity = progress > 0 && progress < 100 ? "1" : "0";
-        }
-        const progText = existingCard.querySelector(".js-progress-text");
-        if (progText) progText.innerText = `DL :: ${progress}%`;
+      // --- CANVAS & STATE UPDATES ---
 
-        const dlBtn = existingCard.querySelector(".btn-download-video");
+      const updateCardState = (card, prog) => {
+        const canvas = card.querySelector(".js-progress-canvas");
+        if (canvas) {
+          // Use imported ProgressManager
+          ProgressManager.init(uniqueId, canvas, prog);
+          canvas.style.opacity = prog > 0 ? "1" : "0";
+        }
+
+        const progText = card.querySelector(".js-progress-text");
+        if (progText) {
+          progText.innerText = `DOWNLOADING :: ${Math.floor(prog)}%`;
+          progText.style.opacity = prog > 0 && prog < 100 ? "1" : "0";
+        }
+
+        const dlBtn = card.querySelector(".btn-download-video");
         if (dlBtn) {
-          const isDownloading = progress > 0 && progress < 100;
+          const isDownloading = prog > 0 && prog < 100;
           if (isDownloading && !dlBtn.classList.contains("downloading")) {
             dlBtn.classList.add("downloading");
             dlBtn.innerHTML = Templates.spinnerSvg;
-            dlBtn.style.background = "rgba(0,0,0,0.8)";
+            // Styling handled in Templates via CSS classes usually, but updating inline for safety
+            dlBtn.style.background = "#000";
             dlBtn.style.color = "#67e8f9";
             dlBtn.style.borderColor = "#06b6d4";
           } else if (!isDownloading && dlBtn.classList.contains("downloading")) {
             dlBtn.classList.remove("downloading");
             dlBtn.innerHTML = ICONS.DOWNLOAD;
-            dlBtn.style.background = "rgba(0,0,0,0.7)";
-            dlBtn.style.color = "white";
-            dlBtn.style.borderColor = "rgba(255,255,255,0.2)";
+            dlBtn.style.background = "rgba(0,0,0,0.6)";
+            dlBtn.style.color = "#fff";
+            dlBtn.style.borderColor = "rgba(255,255,255,0.15)";
           }
         }
+      };
+
+      if (existingCard) {
+        updateCardState(existingCard, progress);
       } else {
         const cardHtml = Templates.videoCard(
           v,
@@ -216,6 +222,10 @@ class UIRenderer {
         );
         container.insertAdjacentHTML("beforeend", cardHtml);
         const newCard = document.getElementById(uniqueId);
+
+        // Initialize Canvas state
+        updateCardState(newCard, progress);
+
         newCard.querySelector(".select-video-btn").onclick = () => this.handlers.onSelectVideo(i);
         const copyEl = newCard.querySelector(".copy-trigger");
         copyEl.onclick = () => this.handlers.onCopyUrl(copyEl.getAttribute("data-url"), copyEl);
@@ -234,8 +244,6 @@ class UIRenderer {
   }
 
   renderSearch(state) {
-    // (Keep existing implementation)
-    // See previous file content for renderSearch logic...
     this.currentView = "search";
     const backBtn = `<button id="btn-back" class="icon-btn">${ICONS.BACK}</button>`;
     const headerHtml = Templates.subNav("Metadata Injection", backBtn);
@@ -286,7 +294,6 @@ class UIRenderer {
   }
 
   renderSuccess() {
-    // (Keep existing implementation)
     this.currentView = "success";
     this.app.innerHTML = Templates.successScreen();
     document.getElementById("btn-view-tasks").onclick = this.handlers.onViewTasks;
@@ -362,8 +369,8 @@ class AppController {
         el.style.borderColor = "var(--status-success)";
         setTimeout(() => {
           el.innerText = originalText;
-          el.style.color = "";
-          el.style.borderColor = "";
+          el.style.color = "#94a3b8";
+          el.style.borderColor = "rgba(255,255,255,0.05)";
         }, 1200);
       },
       onRefreshPage: () => {
