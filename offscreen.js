@@ -1,23 +1,50 @@
 // ======================================================================
 // OFFSCREEN.JS
-// Captures Thumbnail, Duration, AND Resolution
+// Handles DOM-dependent tasks: Thumbnails & Blob URL creation
 // ======================================================================
 
+import { downloadHLS } from "./hls_downloader.js";
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // 1. THUMBNAIL GENERATION
   if (msg.action === "generate_thumbnail") {
     generateThumbnail(msg.url)
       .then((result) => sendResponse({ success: true, data: result }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true; // Keep channel open
+    return true;
+  }
+
+  // 2. HLS DOWNLOAD (Moved here to access URL.createObjectURL)
+  if (msg.action === "download_hls_offscreen") {
+    handleOffscreenDownload(msg.url, msg.headers)
+      .then((blobUrl) => sendResponse({ success: true, blobUrl: blobUrl }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true; // Keep channel open for async response
   }
 });
 
+// --- HLS DOWNLOAD HANDLER ---
+async function handleOffscreenDownload(url, headers) {
+  try {
+    // 1. Download & Decrypt (uses hls_downloader.js)
+    const blob = await downloadHLS(url, headers);
+
+    // 2. Create Object URL (This works here because we are in a DOM environment)
+    const blobUrl = URL.createObjectURL(blob);
+
+    return blobUrl;
+  } catch (e) {
+    console.error("[Offscreen] Download failed", e);
+    throw e;
+  }
+}
+
+// --- THUMBNAIL LOGIC (Existing) ---
 async function generateThumbnail(url) {
   return new Promise((resolve, reject) => {
     const video = document.getElementById("video-renderer");
     const canvas = document.createElement("canvas");
 
-    // Timeout safety (8 seconds)
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Timeout loading video"));
@@ -36,19 +63,15 @@ async function generateThumbnail(url) {
     video.src = url;
     video.muted = true;
 
-    // Wait for metadata (Dimensions & Duration)
     video.onloadeddata = () => {
-      // Seek to 2 seconds or 10%
-      const seekTime = Math.min(2, video.duration * 0.1);
+      const seekTime = Math.min(5, video.duration * 0.1);
       video.currentTime = seekTime;
     };
 
-    // Capture Frame
     video.onseeked = () => {
       try {
         if (video.videoWidth === 0) throw new Error("Video has no width");
 
-        // Set canvas to match video aspect ratio, but max width 320
         const aspectRatio = video.videoHeight / video.videoWidth;
         canvas.width = 320;
         canvas.height = 320 * aspectRatio;
@@ -60,7 +83,6 @@ async function generateThumbnail(url) {
         let duration = video.duration;
         if (!Number.isFinite(duration)) duration = 0;
 
-        // Capture Resolution
         const width = video.videoWidth;
         const height = video.videoHeight;
 
