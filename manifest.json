@@ -1,8 +1,20 @@
 {
   "manifest_version": 3,
   "name": "Ilöw Sniffer",
-  "version": "1.4",
-  "permissions": ["webRequest", "storage", "scripting", "activeTab", "cookies", "offscreen", "downloads"],
+  "version": "1.5",
+  "icons": {
+    "128": "logo128.png"
+  },
+  "permissions": [
+    "webRequest",
+    "storage",
+    "scripting",
+    "activeTab",
+    "cookies",
+    "offscreen",
+    "downloads",
+    "declarativeNetRequest"
+  ],
   "host_permissions": ["<all_urls>", "https://media.ilow.io/*"],
   "background": {
     "service_worker": "background.js",
