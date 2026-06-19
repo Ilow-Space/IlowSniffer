@@ -9,7 +9,7 @@ export const RECENT_KEYS_TIMEOUT = 10000; // ms
 // Popup Script Configuration
 export const API_BASE = "https://media.ilow.io/api";
 export const COOKIE_DOMAIN = "https://media.ilow.io";
-export const AUTH_COOKIE = "ilow_auth_token";
+export const AUTH_COOKIE = "ory_kratos_session";
 export const TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w92";
 
 // General Constants
