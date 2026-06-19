@@ -56,16 +56,30 @@ class ApiService {
   }
   async initAuth() {
     return new Promise((resolve) => {
+      // Safely reads the secure cookie from your application domain bounds
       chrome.cookies.get({ url: CONFIG.COOKIE_DOMAIN, name: CONFIG.AUTH_COOKIE }, (cookie) => {
+        // Cache the session presence to satisfy internal UI guards
         this.token = cookie ? cookie.value : null;
         resolve(!!this.token);
       });
     });
   }
+
   async _fetch(url, options = {}) {
     if (!this.token) throw new Error("Authentication token is missing.");
-    const defaultHeaders = { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" };
-    const response = await fetch(url, { ...options, headers: { ...defaultHeaders, ...options.headers } });
+
+    // REMOVED: Authorization: Bearer header mapping dropped to prevent opaque token parse crashes.
+    const defaultHeaders = {
+      "Content-Type": "application/json"
+    };
+
+    // FIXED: Appended credentials: "include" to naturally pass your secure 
+    // HttpOnly Kratos session cookie through cross-origin extension layers.
+    const response = await fetch(url, {
+      ...options,
+      credentials: "include",
+      headers: { ...defaultHeaders, ...options.headers }
+    });
 
     // Graceful handling for non-JSON responses or auth errors
     if (response.status === 401) {
