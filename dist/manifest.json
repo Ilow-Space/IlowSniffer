@@ -21,18 +21,18 @@
     "https://media.ilow.io/*"
   ],
   "background": {
-    "service_worker": "src/adapters/background/BackgroundController.js",
+    "service_worker": "service-worker-loader.js",
     "type": "module"
   },
   "content_scripts": [
     {
+      "js": [
+        "assets/ContentScraper.js-loader-CrjXpbAN.js"
+      ],
       "matches": [
         "<all_urls>",
         "https://media.ilow.io/*",
         "https://id.ilow.io/*"
-      ],
-      "js": [
-        "src/adapters/content/ContentScraper.js"
       ],
       "run_at": "document_start",
       "all_frames": true
@@ -41,5 +41,20 @@
   "side_panel": {
     "default_path": "popup.html"
   },
-  "action": {}
+  "action": {},
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "<all_urls>",
+        "https://id.ilow.io/*",
+        "https://media.ilow.io/*"
+      ],
+      "resources": [
+        "assets/ThumbnailGenerator-ChOvWGFT.js",
+        "assets/Config-DHCPwQGR.js",
+        "assets/ContentScraper.js-BMOBUaIt.js"
+      ],
+      "use_dynamic_url": false
+    }
+  ]
 }

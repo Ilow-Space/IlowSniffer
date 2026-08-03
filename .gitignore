@@ -1,3 +1,4 @@
 *.zip
 *.ps1
 *.txt
+node_modules

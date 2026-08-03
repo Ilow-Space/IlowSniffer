@@ -1,0 +1,1 @@
+import{t}from"./Config-DHCPwQGR.js";var e=class{static extractFrameAsDataUrl(e,a=t.VIDEO.THUMBNAIL_WIDTH){try{if(!e||0===e.videoWidth)return null;const t=document.createElement("canvas"),r=t.getContext("2d"),i=e.videoHeight/e.videoWidth;return t.width=a,t.height=a*i,r.drawImage(e,0,0,t.width,t.height),t.toDataURL("image/jpeg",.5)}catch(r){return null}}};export{e as t};

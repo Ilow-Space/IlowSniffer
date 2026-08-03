@@ -1,13 +1,16 @@
 <!doctype html>
 <html>
-  <head>
-    <title>Ilow Background Task</title>
-  </head>
-  <body>
-    <!-- Video element for Thumbnail generation -->
-    <video id="video-renderer" crossorigin="anonymous" muted autoplay playsinline style="display: none"></video>
 
-    <!-- Changed to type="module" to support imports -->
-    <script src="offscreen.js" type="module"></script>
-  </body>
+<head>
+  <title>Ilow Background Task</title>
+</head>
+
+<body>
+  <!-- Video element for Thumbnail generation -->
+  <video id="video-renderer" crossorigin="anonymous" muted autoplay playsinline style="display: none"></video>
+
+  <!-- Changed to type="module" to support imports -->
+  <script src="src/adapters/offscreen/OffscreenWorker.js" type="module"></script>
+</body>
+
 </html>
