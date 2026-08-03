@@ -1,0 +1,48 @@
+name: Build and Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on any tag starting with 'v' (e.g., v1.0.0, v1.2.3)
+
+permissions:
+  contents: write # Grants permission to create releases and upload files
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js with caching for faster builds
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      # Step 3: Install project dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # Step 4: Run Vite build script
+      - name: Build extension
+        run: npm run build
+
+      # Step 5: Compress the build directory into a zip archive
+      - name: Zip build output
+        run: |
+          cd dist
+          zip -r ../ilow-extension-${{ github.ref_name }}.zip .
+
+      # Step 6: Create GitHub Release & attach the zipped extension
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ilow-extension-${{ github.ref_name }}.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
