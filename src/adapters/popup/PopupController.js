@@ -329,10 +329,15 @@ class PopupController {
         try {
             let targetUrl = this.state.selectedVideo.url;
 
-            // HDRezka / Voidboost direct MP4 bypass heuristic
-            if (targetUrl.includes("voidboost") || targetUrl.includes("rezka")) {
-                targetUrl = targetUrl.replace(/:hls:manifest\.m3u8/i, "");
-            }
+            // The ":hls:manifest.m3u8" suffix is a purely internal marker BackgroundController
+            // appends when it reconstructs a manifest URL from segment-request patterns (see
+            // handleHeadersReceived's isSpecialSegment handling) - it is never a real path.
+            // Stripping it recovers the actual, directly-playable file URL. This used to only
+            // run for voidboost/rezka, but the same marker shows up for any CDN that fakes HLS
+            // via range-request "segments" (e.g. Kodik's solodcdn) - left in place, the server
+            // misreads the garbage ".../720.mp4:hls:manifest.m3u8" path as a real HLS manifest
+            // and every segment fetch fails.
+            targetUrl = targetUrl.replace(/:hls:manifest\.m3u8$/i, "");
 
             let dynamicName = this.state.selectedMeta.title || this.state.selectedMeta.name;
             if (this.state.mediaType === "tv") {
