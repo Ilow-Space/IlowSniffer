@@ -93,8 +93,8 @@
               </button>
               <button @click="initializeSequence(video)"
                       class="px-2 py-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 rounded text-[9px] font-bold font-mono tracking-wider transition-all"
-                      :disabled="!isAuthenticated || controller.state.isIngesting">
-                INGEST
+                      :disabled="!isAuthenticated || controller.isVideoQueued(video)">
+                {{ controller.isVideoQueued(video) ? "QUEUED" : "INGEST" }}
               </button>
             </div>
           </div>
@@ -146,9 +146,9 @@
                 {{ video.serverFilename || video.url }}
               </div>
               <button @click="initializeSequence(video)"
-                      :class="(isAuthenticated && !controller.state.isIngesting) ? 'btn-primary' : 'btn-disabled'"
-                      :disabled="!isAuthenticated || controller.state.isIngesting">
-                {{ isAuthenticated ? "INITIALIZE SEQUENCE" : "LOGIN REQUIRED" }}
+                      :class="(isAuthenticated && !controller.isVideoQueued(video)) ? 'btn-primary' : 'btn-disabled'"
+                      :disabled="!isAuthenticated || controller.isVideoQueued(video)">
+                {{ !isAuthenticated ? "LOGIN REQUIRED" : (controller.isVideoQueued(video) ? "QUEUED" : "INITIALIZE SEQUENCE") }}
               </button>
             </div>
           </template>
@@ -209,8 +209,8 @@
 
       <button @click="controller.executeUplinkIngestCommand()"
               class="btn-primary"
-              :disabled="!controller.state.selectedMeta || controller.state.isIngesting">
-        {{ controller.state.isIngesting ? `UPLOADING... ${controller.state.ingestProgress}%` : "EXECUTE INGEST" }}
+              :disabled="!controller.state.selectedMeta || (controller.state.selectedVideo && controller.isVideoQueued(controller.state.selectedVideo))">
+        {{ (controller.state.selectedVideo && controller.isVideoQueued(controller.state.selectedVideo)) ? "QUEUED" : "EXECUTE INGEST" }}
       </button>
     </main>
 
@@ -222,7 +222,30 @@
       </div>
 
       <div class="flex-1 overflow-y-auto pr-0.5 space-y-2 pb-2 min-h-0">
-        <div v-if="controller.state.tasks.length === 0" class="text-center py-8 text-zinc-600 font-mono text-[10px] bg-zinc-950/20 border border-zinc-900 border-dashed rounded-lg">// QUEUE_EMPTY</div>
+        <div v-if="controller.state.relayQueue.length === 0 && controller.state.tasks.length === 0" class="text-center py-8 text-zinc-600 font-mono text-[10px] bg-zinc-950/20 border border-zinc-900 border-dashed rounded-lg">// QUEUE_EMPTY</div>
+
+        <!-- Browser-relay ingests: local fetch/assembly -> upload -> server-side optimize -->
+        <div v-for="job in controller.state.relayQueue" :key="'relay-' + job.id" class="panel-card p-3 shadow-sm">
+          <div class="flex justify-between items-start mb-2.5">
+            <div class="flex-1 min-w-0 pr-2">
+              <div class="flex items-center gap-1.5 mb-1">
+                <span class="px-1 rounded bg-indigo-900/60 border border-indigo-700/60 text-indigo-300 text-[8px] font-bold font-mono tracking-tight">RELAY</span>
+              </div>
+              <div class="text-[11px] font-bold text-zinc-100 truncate" :title="job.label">{{ job.label }}</div>
+            </div>
+            <span class="text-[8px] font-bold px-1.5 py-0.5 border rounded uppercase tracking-wider font-mono shadow-sm"
+                  :class="job.status === 'completed' ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/5' : job.status === 'failed' ? 'border-red-500/40 text-red-400 bg-red-500/5' : 'border-blue-500/40 text-blue-400 bg-blue-500/5'"
+                  :title="job.status === 'failed' ? job.error : ''">
+              {{ job.status === 'downloading' ? 'DOWNLOADING' : job.status === 'uploading' ? 'UPLOADING' : job.status === 'optimizing' ? 'OPTIMIZING' : job.status.toUpperCase() }}
+            </span>
+          </div>
+          <div class="h-1 w-full bg-zinc-900 border border-zinc-800/40 rounded overflow-hidden">
+            <div class="h-full transition-all duration-300"
+                 :class="[job.status === 'completed' ? 'bg-emerald-500' : job.status === 'failed' ? 'bg-red-500' : 'bg-blue-500', job.status === 'optimizing' && 'animate-pulse']"
+                 :style="{ width: (job.status === 'optimizing' ? 100 : (job.status === 'completed' ? 100 : (job.progress || 0))) + '%' }"></div>
+          </div>
+        </div>
+
         <div v-for="task in controller.state.tasks" :key="task.downloadId" class="panel-card p-3 shadow-sm">
           <div class="flex justify-between items-start mb-2.5">
             <div class="flex-1 min-w-0 pr-2">

@@ -23,8 +23,7 @@ class PopupController {
             season: 1,
             episode: 1,
             downloadProgressMap: {},
-            isIngesting: false,
-            ingestProgress: 0
+            relayQueue: []
         });
 
         this.init();
@@ -76,8 +75,24 @@ class PopupController {
         });
     }
 
+    /**
+     * Whether a given captured video already has a browser-relay ingest job
+     * queued/running for it (any status other than "failed" - a failed job
+     * can be retried by enqueueing again). Drives disabling that video's own
+     * ingest button without blocking ingestion of other videos.
+     */
+    isVideoQueued(video) {
+        return this.state.relayQueue.some((j) => j.videoKey === video.key && j.status !== "failed");
+    }
+
     async refreshIntervalData() {
         try {
+            chrome.runtime.sendMessage({ action: "get_relay_queue" }, (res) => {
+                if (!chrome.runtime.lastError && Array.isArray(res)) {
+                    this.state.relayQueue = res;
+                }
+            });
+
             chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                 if (tabs[0]?.id) {
                     chrome.runtime.sendMessage({ action: "get_tab_media_counts", tabId: tabs[0].id }, (res) => {
@@ -152,9 +167,9 @@ class PopupController {
     }
 
     async initializeSequence(video) {
-        if (this.state.isIngesting) return;
-        this.state.isIngesting = true;
-
+        // Duplicate submissions are guarded at enqueue time in the background
+        // (dedup by video.key), not here - this just re-runs the (cheap) search,
+        // which is harmless even if the video is already queued/uploading.
         this.state.selectedVideo = video;
         this.state.view = "search";
         this.state.searchResults = [];
@@ -200,8 +215,6 @@ class PopupController {
                     );
                 } else if (genericTitle) {
                     this.executeLocalLibraryDatabaseSearch(genericTitle, null, true);
-                } else {
-                    this.state.isIngesting = false;
                 }
             });
         }
@@ -210,7 +223,6 @@ class PopupController {
     async executeLocalLibraryDatabaseSearch(query, targetYear = null, isAutoFlow = false) {
         if (!query || !query.trim()) {
             this.state.searchResults = [];
-            if (isAutoFlow) this.state.isIngesting = false;
             return;
         }
 
@@ -242,7 +254,6 @@ class PopupController {
     async executeCloudGlobalSearch(query, targetYear = null, isAutoFlow = false) {
         if (!query || !query.trim()) {
             this.state.searchResults = [];
-            if (isAutoFlow) this.state.isIngesting = false;
             return;
         }
 
@@ -258,7 +269,6 @@ class PopupController {
             this.autoSelectExactMetadataMatch(matches, targetYear, query, isAutoFlow);
         } catch (e) {
             this.state.searchResults = [];
-            if (isAutoFlow) this.state.isIngesting = false;
         }
     }
 
@@ -269,7 +279,6 @@ class PopupController {
         if (!results || results.length === 0) {
             this.state.searchResults = [];
             this.state.selectedMeta = null;
-            if (isAutoFlow) this.state.isIngesting = false;
             return;
         }
 
@@ -317,16 +326,9 @@ class PopupController {
             }
         } else {
             this.state.selectedMeta = null;
-            if (isAutoFlow) this.state.isIngesting = false;
         }
     }
     async executeUplinkIngestCommand() {
-        // Manual entry point (EXECUTE INGEST button): guard against a stray
-        // double-click while a request is already in flight. The automatic
-        // flow reaches this point with isIngesting already `true` (set by
-        // initializeSequence), which is expected and must proceed.
-        this.state.isIngesting = true;
-
         try {
             let targetUrl = this.state.selectedVideo.url;
 
@@ -369,37 +371,22 @@ class PopupController {
             // working connection can actually pull the bytes. The offscreen
             // document does the fetch/HLS-assembly and uploads the result via
             // MediaHost's existing resumable upload API.
-            this.state.ingestProgress = 0;
-            const progressPoll = setInterval(() => {
-                chrome.runtime.sendMessage({ action: "get_relay_progress" }, (res) => {
-                    if (!chrome.runtime.lastError && res) this.state.ingestProgress = res.progress;
-                });
-            }, 500);
+            //
+            // This just enqueues the job and returns immediately - the background
+            // queue (BackgroundController.processRelayQueue) runs it, so triggering
+            // another ingest right away queues it instead of blocking on this one.
+            // Progress/stage is shown in the Tasks view via state.relayQueue.
+            chrome.runtime.sendMessage({
+                action: "enqueue_relay_ingest",
+                videoKey: this.state.selectedVideo.key,
+                url: targetUrl,
+                headers: this.state.selectedVideo.headers || {},
+                meta
+            });
 
-            let response;
-            try {
-                response = await chrome.runtime.sendMessage({
-                    action: "relay_ingest",
-                    url: targetUrl,
-                    headers: this.state.selectedVideo.headers || {},
-                    meta
-                });
-            } finally {
-                clearInterval(progressPoll);
-            }
-
-            if (!response || !response.success) {
-                alert(`Ingest Failed: ${response?.error || "Relay upload failed."}`);
-                this.state.view = "search";
-                return;
-            }
-
-            this.state.view = "success";
+            this.state.view = "tasks";
         } catch (e) {
             alert(`Ingest Failed: ${e.message}`);
-        } finally {
-            this.state.isIngesting = false;
-            this.state.ingestProgress = 0;
         }
     }
 

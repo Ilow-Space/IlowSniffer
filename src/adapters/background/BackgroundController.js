@@ -27,9 +27,16 @@ class BackgroundController {
         // visibility into that cross-origin frame's own DOM.
         this.kodikEpisodeByTab = {};
 
-        // Progress (0-100) of the currently in-flight browser-relay ingest
-        // upload, polled by the popup via "get_relay_progress".
-        this.lastRelayProgress = 0;
+        // Queue of browser-relay ingest jobs (fetch/assemble in the browser,
+        // then upload to MediaHost). In-memory only, like tabMediaCounts above -
+        // a job holds a live Blob mid-flight which can't be serialized to
+        // chrome.storage anyway, so persisting anything beyond a status snapshot
+        // buys nothing (a killed service worker loses the job regardless).
+        // Entries: {id, videoKey, label, status, progress, error, url, headers, meta}
+        // status: 'queued' | 'downloading' | 'uploading' | 'optimizing' | 'completed' | 'failed'
+        this.relayQueue = [];
+        this.relayQueueRunning = false;
+        this.relayJobSeq = 0;
 
         this.initListeners();
         this.initCachePruner();
@@ -383,37 +390,41 @@ class BackgroundController {
         }
 
         if (req.action === "relay_progress") {
-            this.lastRelayProgress = req.progress;
+            const job = this.relayQueue.find((j) => j.id === req.jobId);
+            if (job) {
+                job.status = req.status;
+                job.progress = req.progress;
+            }
             return;
         }
 
-        if (req.action === "get_relay_progress") {
-            sendResponse({ progress: this.lastRelayProgress || 0 });
+        if (req.action === "get_relay_queue") {
+            sendResponse(this.relayQueue);
             return;
         }
 
-        if (req.action === "relay_ingest") {
-            try {
-                this.lastRelayProgress = 0;
-                // Referer/Origin/User-Agent can't be set from a plain fetch() in the
-                // offscreen document (forbidden headers, silently dropped) - only
-                // declarativeNetRequest (background-only) can actually inject them
-                // at the network layer, exactly like the local-download pipeline
-                // already does for the same class of Referer-protected sources.
-                await this.dnrManager.setupImpersonationRules(req.url, req.headers);
-                await this.ensureOffscreenContextExists();
-                const response = await chrome.runtime.sendMessage({
-                    action: "relay_ingest_upload",
+        if (req.action === "enqueue_relay_ingest") {
+            // Dedup: don't let the same captured video be queued twice while an
+            // earlier attempt for it is still queued/running (a failed entry can
+            // be retried by re-enqueueing).
+            const alreadyQueued = this.relayQueue.some(
+                (j) => j.videoKey === req.videoKey && j.status !== "failed"
+            );
+            if (!alreadyQueued) {
+                this.relayQueue.push({
+                    id: ++this.relayJobSeq,
+                    videoKey: req.videoKey,
+                    label: req.meta?.fileName || "Untitled",
+                    status: "queued",
+                    progress: 0,
+                    error: null,
                     url: req.url,
                     headers: req.headers,
                     meta: req.meta
                 });
-                sendResponse(response);
-            } catch (e) {
-                sendResponse({ success: false, error: e.message });
-            } finally {
-                await this.dnrManager.clearImpersonationRules();
+                this.processRelayQueue();
             }
+            sendResponse({ success: true });
             return;
         }
 
@@ -517,6 +528,54 @@ class BackgroundController {
         }
     }
 
+    /**
+     * Drains this.relayQueue sequentially, one job at a time. Re-entrant calls
+     * (from enqueue_relay_ingest while a job is already running) are no-ops -
+     * the currently-running loop will pick up the newly queued job itself.
+     */
+    async processRelayQueue() {
+        if (this.relayQueueRunning) return;
+        this.relayQueueRunning = true;
+
+        try {
+            let job;
+            while ((job = this.relayQueue.find((j) => j.status === "queued"))) {
+                try {
+                    // Referer/Origin/User-Agent can't be set from a plain fetch() in
+                    // the offscreen document (forbidden headers, silently dropped) -
+                    // only declarativeNetRequest (background-only) can inject them at
+                    // the network layer, same as the local-download pipeline already
+                    // does for the same class of Referer-protected sources.
+                    await this.dnrManager.setupImpersonationRules(job.url, job.headers);
+                    await this.ensureOffscreenContextExists();
+                    const response = await chrome.runtime.sendMessage({
+                        action: "relay_ingest_upload",
+                        url: job.url,
+                        headers: job.headers,
+                        meta: job.meta,
+                        jobId: job.id
+                    });
+
+                    if (response && response.success) {
+                        job.status = "completed";
+                        job.progress = 100;
+                    } else {
+                        job.status = "failed";
+                        job.error = response?.error || "Relay upload failed.";
+                    }
+                } catch (e) {
+                    job.status = "failed";
+                    job.error = e.message;
+                } finally {
+                    await this.dnrManager.clearImpersonationRules();
+                    job.finishedAt = Date.now();
+                }
+            }
+        } finally {
+            this.relayQueueRunning = false;
+        }
+    }
+
     getFilenameFromHeaders(headers) {
         if (!headers) return null;
         const cd = headers.find((h) => h.name.toLowerCase() === "content-disposition");
@@ -542,6 +601,12 @@ class BackgroundController {
             for (const id in this.requestCache) {
                 if (now - this.requestCache[id].timestamp > 60000) delete this.requestCache[id];
             }
+
+            // Drop finished relay queue entries a while after they settle, so the
+            // popup has time to show the final completed/failed state.
+            this.relayQueue = this.relayQueue.filter(
+                (j) => !j.finishedAt || (now - j.finishedAt < 10000)
+            );
 
             // GC: Purge Empty Media Candidates lingering in storage
             await this.storageRepo.updateCapturedVideos((videosMap) => {

@@ -28,7 +28,7 @@ class OffscreenWorker {
             }
 
             if (message.action === "relay_ingest_upload") {
-                this.processRelayIngest(message.url, message.headers, message.meta, sendResponse);
+                this.processRelayIngest(message.url, message.headers, message.meta, message.jobId, sendResponse);
                 return true;
             }
         });
@@ -161,7 +161,7 @@ class OffscreenWorker {
      * result in an object URL) and the server-relay upload path (which uploads
      * the Blob directly) so the manifest/segment/decrypt logic lives in one place.
      */
-    async assembleHlsBlob(masterUrl, customHeaders) {
+    async assembleHlsBlob(masterUrl, customHeaders, onSegmentProgress) {
         const manifestText = await this.httpClient.getResponseText(masterUrl, customHeaders);
         let targetPlaylistUrl = masterUrl;
         let manifestToParse = manifestText;
@@ -174,7 +174,7 @@ class OffscreenWorker {
         const segmentDefinitions = HlsParser.parseMediaPlaylist(manifestToParse, targetPlaylistUrl);
         if (segmentDefinitions.length === 0) throw new Error("No media segments located inside stream layout.");
 
-        const binaryChunks = await this.downloadAndDecryptSegmentsInBatches(segmentDefinitions, 5, customHeaders);
+        const binaryChunks = await this.downloadAndDecryptSegmentsInBatches(segmentDefinitions, 5, customHeaders, onSegmentProgress);
         return new Blob(binaryChunks, { type: "video/mp2t" });
     }
 
@@ -183,19 +183,28 @@ class OffscreenWorker {
      * server-side anti-hotlink/IP-binding CDN restrictions the server can never
      * satisfy) and uploads the resulting bytes straight to MediaHost's existing
      * resumable upload API, instead of asking the server to fetch the URL itself.
+     * jobId identifies this job's entry in BackgroundController's relay queue so
+     * progress messages can be routed to the right queue item.
      */
-    async processRelayIngest(url, headers, meta, sendResponse) {
+    async processRelayIngest(url, headers, meta, jobId, sendResponse) {
+        const reportStage = (status, progress) => {
+            chrome.runtime.sendMessage({ action: "relay_progress", jobId, status, progress }).catch(() => { });
+        };
+
         try {
+            reportStage("downloading", 0);
             const isHls = UrlCleaner.isHlsUrl(url);
             const blob = isHls
-                ? await this.assembleHlsBlob(url, headers)
+                ? await this.assembleHlsBlob(url, headers, (completed, total) => {
+                    reportStage("downloading", total > 0 ? Math.round((completed / total) * 100) : 0);
+                })
                 : await this.fetchDirectFileBlob(url, headers);
 
-            const accessCode = await this.uploadBlobToServer(blob, meta, (sent, total) => {
-                chrome.runtime.sendMessage({
-                    action: "relay_progress",
-                    progress: total > 0 ? Math.round((sent / total) * 100) : 0
-                }).catch(() => { });
+            const accessCode = await this.uploadBlobToServer(blob, meta, {
+                onUploadProgress: (sent, total) => {
+                    reportStage("uploading", total > 0 ? Math.round((sent / total) * 100) : 0);
+                },
+                onOptimizing: () => reportStage("optimizing", null)
             });
 
             sendResponse({ success: true, accessCode });
@@ -214,7 +223,7 @@ class OffscreenWorker {
         return await response.blob();
     }
 
-    async uploadBlobToServer(blob, meta, onProgress) {
+    async uploadBlobToServer(blob, meta, { onUploadProgress, onOptimizing } = {}) {
         const initResponse = await fetch(`${Config.API.BASE_URL}/upload/initiate`, {
             method: "POST",
             credentials: "include",
@@ -250,8 +259,13 @@ class OffscreenWorker {
             }
 
             offset = end;
-            if (onProgress) onProgress(offset, blob.size);
+            if (onUploadProgress) onUploadProgress(offset, blob.size);
         }
+
+        // The server marks this upload "optimizing" (internal.storage.Store) and
+        // runs ffmpeg CMAF repackaging synchronously before this call resolves -
+        // this is our one hook to reflect that stage locally.
+        if (onOptimizing) onOptimizing();
 
         const completeResponse = await fetch(`${Config.API.BASE_URL}/upload/${uploadId}/complete`, {
             method: "POST",
@@ -268,11 +282,12 @@ class OffscreenWorker {
         return result.accessCode;
     }
 
-    async downloadAndDecryptSegmentsInBatches(segments, concurrencyLimit, headers) {
+    async downloadAndDecryptSegmentsInBatches(segments, concurrencyLimit, headers, onSegmentProgress) {
         const totalCount = segments.length;
         const outputBuffers = new Array(totalCount);
         const decryptionKeyCache = {};
         let rollingIndex = 0;
+        let completedCount = 0;
 
         const workerThread = async () => {
             while (rollingIndex < totalCount) {
@@ -298,6 +313,9 @@ class OffscreenWorker {
                 } catch (segmentError) {
                     console.error(`[Offscreen Engine] Segment collection failure at index ${currentTaskIndex}:`, segmentError);
                     outputBuffers[currentTaskIndex] = new ArrayBuffer(0);
+                } finally {
+                    completedCount++;
+                    if (onSegmentProgress) onSegmentProgress(completedCount, totalCount);
                 }
             }
         };
