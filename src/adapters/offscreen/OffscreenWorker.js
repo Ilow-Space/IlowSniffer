@@ -2,6 +2,8 @@ import { ThumbnailGenerator } from "../../infrastructure/canvas/ThumbnailGenerat
 import { BrowserHttpClient } from "../../infrastructure/network/BrowserHttpClient.js";
 import { HlsParser } from "../../domain/processing/services/HlsParser.js";
 import { Decryptor } from "../../domain/processing/services/Decryptor.js";
+import { UrlCleaner } from "../../domain/capture/services/UrlCleaner.js";
+import { Config } from "../../shared/Config.js";
 
 /**
  * Offscreen DOM Worker Adapter.
@@ -22,6 +24,11 @@ class OffscreenWorker {
 
             if (message.action === "download_hls_offscreen") {
                 this.processHlsStreamAssembly(message.url, message.headers, sendResponse);
+                return true;
+            }
+
+            if (message.action === "relay_ingest_upload") {
+                this.processRelayIngest(message.url, message.headers, message.meta, sendResponse);
                 return true;
             }
         });
@@ -139,28 +146,126 @@ class OffscreenWorker {
 
     async processHlsStreamAssembly(masterUrl, customHeaders, sendResponse) {
         try {
-            const manifestText = await this.httpClient.getResponseText(masterUrl, customHeaders);
-            let targetPlaylistUrl = masterUrl;
-            let manifestToParse = manifestText;
-
-            if (HlsParser.isMasterPlaylist(manifestText)) {
-                targetPlaylistUrl = HlsParser.getBestVariantUrl(manifestText, masterUrl);
-                manifestToParse = await this.httpClient.getResponseText(targetPlaylistUrl, customHeaders);
-            }
-
-            const segmentDefinitions = HlsParser.parseMediaPlaylist(manifestToParse, targetPlaylistUrl);
-            if (segmentDefinitions.length === 0) throw new Error("No media segments located inside stream layout.");
-
-            const binaryChunks = await this.downloadAndDecryptSegmentsInBatches(segmentDefinitions, 5, customHeaders);
-
-            const combinedMpegTsBlob = new Blob(binaryChunks, { type: "video/mp2t" });
+            const combinedMpegTsBlob = await this.assembleHlsBlob(masterUrl, customHeaders);
             const distributionUrl = URL.createObjectURL(combinedMpegTsBlob);
-
             sendResponse({ success: true, blobUrl: distributionUrl });
         } catch (assemblyError) {
             console.error("[Offscreen Assembly Engine] Processing failed:", assemblyError);
             sendResponse({ success: false, error: assemblyError.message });
         }
+    }
+
+    /**
+     * Fetches and reassembles an HLS stream (master or media playlist) into a
+     * single playable Blob. Shared by the local-download path (which wraps the
+     * result in an object URL) and the server-relay upload path (which uploads
+     * the Blob directly) so the manifest/segment/decrypt logic lives in one place.
+     */
+    async assembleHlsBlob(masterUrl, customHeaders) {
+        const manifestText = await this.httpClient.getResponseText(masterUrl, customHeaders);
+        let targetPlaylistUrl = masterUrl;
+        let manifestToParse = manifestText;
+
+        if (HlsParser.isMasterPlaylist(manifestText)) {
+            targetPlaylistUrl = HlsParser.getBestVariantUrl(manifestText, masterUrl);
+            manifestToParse = await this.httpClient.getResponseText(targetPlaylistUrl, customHeaders);
+        }
+
+        const segmentDefinitions = HlsParser.parseMediaPlaylist(manifestToParse, targetPlaylistUrl);
+        if (segmentDefinitions.length === 0) throw new Error("No media segments located inside stream layout.");
+
+        const binaryChunks = await this.downloadAndDecryptSegmentsInBatches(segmentDefinitions, 5, customHeaders);
+        return new Blob(binaryChunks, { type: "video/mp2t" });
+    }
+
+    /**
+     * Fetches a video (via the browser's own IP/cookies/TLS stack - bypassing
+     * server-side anti-hotlink/IP-binding CDN restrictions the server can never
+     * satisfy) and uploads the resulting bytes straight to MediaHost's existing
+     * resumable upload API, instead of asking the server to fetch the URL itself.
+     */
+    async processRelayIngest(url, headers, meta, sendResponse) {
+        try {
+            const isHls = UrlCleaner.isHlsUrl(url);
+            const blob = isHls
+                ? await this.assembleHlsBlob(url, headers)
+                : await this.fetchDirectFileBlob(url, headers);
+
+            const accessCode = await this.uploadBlobToServer(blob, meta, (sent, total) => {
+                chrome.runtime.sendMessage({
+                    action: "relay_progress",
+                    progress: total > 0 ? Math.round((sent / total) * 100) : 0
+                }).catch(() => { });
+            });
+
+            sendResponse({ success: true, accessCode });
+        } catch (relayError) {
+            console.error("[Offscreen Relay Ingest] Failed:", relayError);
+            sendResponse({ success: false, error: relayError.message });
+        }
+    }
+
+    async fetchDirectFileBlob(url, headers) {
+        const cleanHeaders = BrowserHttpClient.sanitizeHeaders(headers);
+        const response = await fetch(url, { headers: cleanHeaders, credentials: "include" });
+        if (!response.ok) {
+            throw new Error(`Direct file fetch failed - Status: ${response.status}`);
+        }
+        return await response.blob();
+    }
+
+    async uploadBlobToServer(blob, meta, onProgress) {
+        const initResponse = await fetch(`${Config.API.BASE_URL}/upload/initiate`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                fileName: meta.fileName,
+                fileSize: blob.size,
+                tmdbId: meta.tmdbId,
+                mediaType: meta.mediaType,
+                season: meta.season || 0,
+                episode: meta.episode || 0
+            })
+        });
+        if (!initResponse.ok) {
+            throw new Error(`Upload initiate failed - Status: ${initResponse.status}`);
+        }
+        const { uploadId } = await initResponse.json();
+
+        const chunkSize = 5 * 1024 * 1024;
+        let offset = 0;
+        while (offset < blob.size) {
+            const end = Math.min(offset + chunkSize, blob.size);
+            const chunk = blob.slice(offset, end);
+
+            const chunkResponse = await fetch(`${Config.API.BASE_URL}/upload/${uploadId}`, {
+                method: "PATCH",
+                credentials: "include",
+                headers: { "Content-Range": `bytes ${offset}-${end - 1}/${blob.size}` },
+                body: chunk
+            });
+            if (!chunkResponse.ok) {
+                throw new Error(`Upload chunk failed - Status: ${chunkResponse.status}`);
+            }
+
+            offset = end;
+            if (onProgress) onProgress(offset, blob.size);
+        }
+
+        const completeResponse = await fetch(`${Config.API.BASE_URL}/upload/${uploadId}/complete`, {
+            method: "POST",
+            credentials: "include"
+        });
+
+        // A 409 Conflict means the file already exists (duplicate detected by
+        // hash) - the server still returns the usable accessCode in that case.
+        if (!completeResponse.ok && completeResponse.status !== 409) {
+            throw new Error(`Upload finalize failed - Status: ${completeResponse.status}`);
+        }
+
+        const result = await completeResponse.json();
+        return result.accessCode;
     }
 
     async downloadAndDecryptSegmentsInBatches(segments, concurrencyLimit, headers) {

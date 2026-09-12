@@ -23,7 +23,8 @@ class PopupController {
             season: 1,
             episode: 1,
             downloadProgressMap: {},
-            isIngesting: false
+            isIngesting: false,
+            ingestProgress: 0
         });
 
         this.init();
@@ -349,45 +350,54 @@ class PopupController {
                 || this.state.selectedMeta.tmdb_id
                 || this.state.selectedMeta.id;
 
-            const payload = {
-                url: targetUrl,
+            const meta = {
+                fileName: dynamicName,
                 tmdbId: parseInt(targetTmdbId),
-                mediaType: this.state.mediaType,
-                originalName: dynamicName,
-                headers: this.state.selectedVideo.headers || {}
+                mediaType: this.state.mediaType
             };
-
             if (this.state.mediaType === "tv") {
-                payload.season = parseInt(this.state.season);
-                payload.episode = parseInt(this.state.episode);
+                meta.season = parseInt(this.state.season);
+                meta.episode = parseInt(this.state.episode);
             }
 
-            const response = await this.executeAuthenticatedFetch("/download/url", {
-                method: "POST",
-                body: JSON.stringify(payload)
-            });
+            // Relay via the browser instead of asking the server to fetch the URL
+            // itself: many sources (e.g. Kodik's solodcdn) bind the signed URL to
+            // the requesting IP, so a server-side fetch gets rejected even with
+            // the right headers/cookies - only the browser that already has a
+            // working connection can actually pull the bytes. The offscreen
+            // document does the fetch/HLS-assembly and uploads the result via
+            // MediaHost's existing resumable upload API.
+            this.state.ingestProgress = 0;
+            const progressPoll = setInterval(() => {
+                chrome.runtime.sendMessage({ action: "get_relay_progress" }, (res) => {
+                    if (!chrome.runtime.lastError && res) this.state.ingestProgress = res.progress;
+                });
+            }, 500);
 
-            const downloadId = response?.downloadId;
-            const finalState = downloadId ? await this.pollDownloadStatus(downloadId) : null;
+            let response;
+            try {
+                response = await chrome.runtime.sendMessage({
+                    action: "relay_ingest",
+                    url: targetUrl,
+                    headers: this.state.selectedVideo.headers || {},
+                    meta
+                });
+            } finally {
+                clearInterval(progressPoll);
+            }
 
-            if (finalState?.status === "failed") {
-                alert(`Ingest Failed: ${finalState.error || "Server reported a failure."}`);
+            if (!response || !response.success) {
+                alert(`Ingest Failed: ${response?.error || "Relay upload failed."}`);
                 this.state.view = "search";
                 return;
             }
 
-            if (finalState?.status === "completed") {
-                this.state.view = "success";
-                return;
-            }
-
-            // Still pending/downloading after the initial check window - hand off
-            // to the live Tasks view instead of lying about a finished transfer.
-            this.state.view = "tasks";
+            this.state.view = "success";
         } catch (e) {
             alert(`Ingest Failed: ${e.message}`);
         } finally {
             this.state.isIngesting = false;
+            this.state.ingestProgress = 0;
         }
     }
 
@@ -395,26 +405,6 @@ class PopupController {
         chrome.runtime.sendMessage({ action: "dismiss_video", key: video.key }, () => {
             this.state.videos = this.state.videos.filter(v => v.key !== video.key);
         });
-    }
-
-    /**
-     * Briefly polls the server-side download state so we can surface an
-     * immediate failure (e.g. blocked/hotlink-protected source) instead of
-     * unconditionally declaring success right after the POST is accepted.
-     */
-    async pollDownloadStatus(downloadId, attempts = 5, intervalMs = 1000) {
-        for (let i = 0; i < attempts; i++) {
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
-            try {
-                const state = await this.executeAuthenticatedFetch(`/download/${downloadId}/status`);
-                if (state?.status === "completed" || state?.status === "failed") {
-                    return state;
-                }
-            } catch (e) {
-                // Transient poll failure - keep trying for the remaining attempts.
-            }
-        }
-        return null;
     }
 }
 

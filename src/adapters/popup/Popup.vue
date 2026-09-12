@@ -210,7 +210,7 @@
       <button @click="controller.executeUplinkIngestCommand()"
               class="btn-primary"
               :disabled="!controller.state.selectedMeta || controller.state.isIngesting">
-        EXECUTE INGEST
+        {{ controller.state.isIngesting ? `UPLOADING... ${controller.state.ingestProgress}%` : "EXECUTE INGEST" }}
       </button>
     </main>
 

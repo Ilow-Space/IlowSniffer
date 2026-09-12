@@ -27,6 +27,10 @@ class BackgroundController {
         // visibility into that cross-origin frame's own DOM.
         this.kodikEpisodeByTab = {};
 
+        // Progress (0-100) of the currently in-flight browser-relay ingest
+        // upload, polled by the popup via "get_relay_progress".
+        this.lastRelayProgress = 0;
+
         this.initListeners();
         this.initCachePruner();
     }
@@ -376,6 +380,33 @@ class BackgroundController {
 
         if (req.action === "download_video") {
             this.executeDownloadPipeline(req.url, req.filename);
+        }
+
+        if (req.action === "relay_progress") {
+            this.lastRelayProgress = req.progress;
+            return;
+        }
+
+        if (req.action === "get_relay_progress") {
+            sendResponse({ progress: this.lastRelayProgress || 0 });
+            return;
+        }
+
+        if (req.action === "relay_ingest") {
+            try {
+                this.lastRelayProgress = 0;
+                await this.ensureOffscreenContextExists();
+                const response = await chrome.runtime.sendMessage({
+                    action: "relay_ingest_upload",
+                    url: req.url,
+                    headers: req.headers,
+                    meta: req.meta
+                });
+                sendResponse(response);
+            } catch (e) {
+                sendResponse({ success: false, error: e.message });
+            }
+            return;
         }
 
         if (req.action === "execute_network_fetch") {
