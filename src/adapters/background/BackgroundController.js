@@ -265,12 +265,17 @@ class BackgroundController {
             if (tabId) {
                 this.kodikEpisodeByTab[tabId] = { season: req.season, episode: req.episode };
 
-                // Back-fill in case this Kodik iframe update arrives after we
-                // already computed and stored this video's page heuristics.
+                // Back-fill ONLY assets that don't already have a season/episode
+                // (i.e. this Kodik update arrived after heuristics were computed
+                // for a video that's still missing it) - never assets that already
+                // have one set. Without this guard, switching episodes in the
+                // Kodik player later on would retroactively relabel every already-
+                // discovered older episode on this tab to match the new selection,
+                // since they'd all still match `asset.tabId === tabId`.
                 await this.storageRepo.updateCapturedVideos((vMap) => {
                     for (const key in vMap) {
                         const asset = vMap[key];
-                        if (asset.tabId === tabId && asset.heuristics) {
+                        if (asset.tabId === tabId && asset.heuristics && !asset.heuristics.season && !asset.heuristics.episode) {
                             asset.heuristics.mediaType = "tv";
                             asset.heuristics.season = req.season;
                             asset.heuristics.episode = req.episode;

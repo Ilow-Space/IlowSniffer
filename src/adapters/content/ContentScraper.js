@@ -36,7 +36,14 @@ class ContentScraper {
             if (key === lastKey) return;
             lastKey = key;
 
-            chrome.runtime.sendMessage({ action: "kodik_episode_detected", season, episode });
+            // sendMessage can throw synchronously (not just reject) once the
+            // extension is reloaded and this already-injected content script's
+            // context is invalidated - only a page refresh fixes that, so just
+            // swallow it rather than spamming an uncaught error every second
+            // until the user reloads the tab.
+            try {
+                chrome.runtime.sendMessage({ action: "kodik_episode_detected", season, episode }).catch(() => { });
+            } catch (e) { }
         }, 1000);
     }
 
@@ -158,14 +165,16 @@ class ContentScraper {
 
         const thumbnailData = ThumbnailGenerator.extractFrameAsDataUrl(video);
 
-        chrome.runtime.sendMessage({
-            action: "delayed_metadata_capture",
-            payload: {
-                duration: duration,
-                thumbnail: thumbnailData,
-                pageTitle: document.title
-            }
-        });
+        try {
+            chrome.runtime.sendMessage({
+                action: "delayed_metadata_capture",
+                payload: {
+                    duration: duration,
+                    thumbnail: thumbnailData,
+                    pageTitle: document.title
+                }
+            }).catch(() => { });
+        } catch (e) { }
     }
 }
 
