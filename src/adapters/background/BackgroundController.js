@@ -395,6 +395,12 @@ class BackgroundController {
         if (req.action === "relay_ingest") {
             try {
                 this.lastRelayProgress = 0;
+                // Referer/Origin/User-Agent can't be set from a plain fetch() in the
+                // offscreen document (forbidden headers, silently dropped) - only
+                // declarativeNetRequest (background-only) can actually inject them
+                // at the network layer, exactly like the local-download pipeline
+                // already does for the same class of Referer-protected sources.
+                await this.dnrManager.setupImpersonationRules(req.url, req.headers);
                 await this.ensureOffscreenContextExists();
                 const response = await chrome.runtime.sendMessage({
                     action: "relay_ingest_upload",
@@ -405,6 +411,8 @@ class BackgroundController {
                 sendResponse(response);
             } catch (e) {
                 sendResponse({ success: false, error: e.message });
+            } finally {
+                await this.dnrManager.clearImpersonationRules();
             }
             return;
         }
