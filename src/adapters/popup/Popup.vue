@@ -41,7 +41,7 @@
           <span class="section-title">Detected Streams</span>
         </div>
         <button @click="controller.state.view = 'tasks'" class="btn-secondary">
-          {{ controller.state.tasks.length }} Active Tasks &rarr;
+          {{ controller.activeTaskCount() }} Active Tasks &rarr;
         </button>
       </div>
 

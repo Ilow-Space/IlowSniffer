@@ -85,6 +85,21 @@ class PopupController {
         return this.state.relayQueue.some((j) => j.videoKey === video.key && j.status !== "failed");
     }
 
+    /**
+     * Total count for the "N Active Tasks" button - this used to only count
+     * state.tasks (server-tracked uploads/downloads), which made it read 0
+     * while a relay job was still queued/downloading locally (before it even
+     * reaches the server). Relay jobs already visible as a server task once
+     * they start uploading (see the Tasks view's own status filter) are
+     * excluded here so they aren't counted twice.
+     */
+    activeTaskCount() {
+        const localOnly = this.state.relayQueue.filter(
+            (j) => j.status === "queued" || j.status === "downloading"
+        ).length;
+        return localOnly + this.state.tasks.length;
+    }
+
     async refreshIntervalData() {
         try {
             chrome.runtime.sendMessage({ action: "get_relay_queue" }, (res) => {
