@@ -8,6 +8,36 @@ import { MetadataHeuristicsEngine } from "../../domain/heuristics/MetadataHeuris
 class ContentScraper {
     constructor() {
         this.initMessageListener();
+        this.watchKodikSeasonEpisode();
+    }
+
+    /**
+     * Sites like YummyAnime embed a third-party Kodik player in a cross-origin
+     * <iframe> (kodikplayer.com and its mirrors). Its season/episode <select>
+     * UI (.serial-panel) lives inside that frame's own document, never on the
+     * host page, so `extract_page_heuristics` (which only ever queries the top
+     * frame) can never see it. This content script also runs inside that iframe
+     * directly (manifest matches <all_urls>, all_frames: true), so instead it
+     * polls locally for the panel and pushes season/episode to the background
+     * service worker whenever the selection changes; it's a silent no-op in
+     * every frame that never has a Kodik panel.
+     */
+    watchKodikSeasonEpisode() {
+        let lastKey = null;
+        setInterval(() => {
+            if (!document.querySelector(".serial-panel")) return;
+
+            const seasonSelect = document.querySelector(".serial-seasons-box select");
+            const episodeSelect = document.querySelector(".serial-series-box select");
+            const season = parseInt(seasonSelect?.value, 10) || 1;
+            const episode = parseInt(episodeSelect?.value, 10) || 1;
+
+            const key = `${season}:${episode}`;
+            if (key === lastKey) return;
+            lastKey = key;
+
+            chrome.runtime.sendMessage({ action: "kodik_episode_detected", season, episode });
+        }, 1000);
     }
 
     initMessageListener() {

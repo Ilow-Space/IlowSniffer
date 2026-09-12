@@ -88,9 +88,12 @@
               <button @click.stop="copyStreamUrl(video.url, $event)" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 text-[10px]" title="Copy URL">
                 📋
               </button>
-              <button @click="initializeSequence(video)" 
+              <button @click.stop="controller.dismissVideo(video)" class="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 text-[10px]" title="Dismiss">
+                ✕
+              </button>
+              <button @click="initializeSequence(video)"
                       class="px-2 py-1 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 border border-blue-500/30 rounded text-[9px] font-bold font-mono tracking-wider transition-all"
-                      :disabled="!isAuthenticated">
+                      :disabled="!isAuthenticated || controller.state.isIngesting">
                 INGEST
               </button>
             </div>
@@ -114,7 +117,13 @@
                 </span>
               </div>
               
-              <button @click.stop="triggerLocalDownload(video)" 
+              <button @click.stop="controller.dismissVideo(video)"
+                      class="absolute top-2 right-11 w-7 h-7 rounded-md text-white border flex items-center justify-center cursor-pointer backdrop-blur-md z-20 transition-all duration-200 bg-black/50 border-white/10 hover:bg-black/80 hover:border-white/30"
+                      title="Dismiss">
+                <span class="text-xs">✕</span>
+              </button>
+
+              <button @click.stop="triggerLocalDownload(video)"
                       class="absolute top-2 right-2 w-7 h-7 rounded-md text-white border flex items-center justify-center cursor-pointer backdrop-blur-md z-20 transition-all duration-200"
                       :class="isDownloading(video.url) ? 'bg-black border-cyan-500 text-cyan-400 animate-pulse' : 'bg-black/50 border-white/10 hover:bg-black/80 hover:border-white/30'">
                 <span v-if="isDownloading(video.url)" class="text-xs">⏳</span>
@@ -136,9 +145,9 @@
               <div @click="copyStreamUrl(video.url, $event)" class="mb-2 text-[10px] font-mono text-zinc-400 bg-zinc-900 px-2 py-1.5 rounded border border-zinc-800/60 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer hover:text-zinc-200 hover:border-zinc-700 transition-all">
                 {{ video.serverFilename || video.url }}
               </div>
-              <button @click="initializeSequence(video)" 
-                      :class="isAuthenticated ? 'btn-primary' : 'btn-disabled'"
-                      :disabled="!isAuthenticated">
+              <button @click="initializeSequence(video)"
+                      :class="(isAuthenticated && !controller.state.isIngesting) ? 'btn-primary' : 'btn-disabled'"
+                      :disabled="!isAuthenticated || controller.state.isIngesting">
                 {{ isAuthenticated ? "INITIALIZE SEQUENCE" : "LOGIN REQUIRED" }}
               </button>
             </div>
@@ -198,9 +207,9 @@
         </div>
       </div>
 
-      <button @click="controller.executeUplinkIngestCommand()" 
-              class="btn-primary" 
-              :disabled="!controller.state.selectedMeta">
+      <button @click="controller.executeUplinkIngestCommand()"
+              class="btn-primary"
+              :disabled="!controller.state.selectedMeta || controller.state.isIngesting">
         EXECUTE INGEST
       </button>
     </main>

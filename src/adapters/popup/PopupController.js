@@ -22,7 +22,8 @@ class PopupController {
             selectedMeta: null,
             season: 1,
             episode: 1,
-            downloadProgressMap: {}
+            downloadProgressMap: {},
+            isIngesting: false
         });
 
         this.init();
@@ -150,6 +151,9 @@ class PopupController {
     }
 
     async initializeSequence(video) {
+        if (this.state.isIngesting) return;
+        this.state.isIngesting = true;
+
         this.state.selectedVideo = video;
         this.state.view = "search";
         this.state.searchResults = [];
@@ -195,6 +199,8 @@ class PopupController {
                     );
                 } else if (genericTitle) {
                     this.executeLocalLibraryDatabaseSearch(genericTitle, null, true);
+                } else {
+                    this.state.isIngesting = false;
                 }
             });
         }
@@ -203,6 +209,7 @@ class PopupController {
     async executeLocalLibraryDatabaseSearch(query, targetYear = null, isAutoFlow = false) {
         if (!query || !query.trim()) {
             this.state.searchResults = [];
+            if (isAutoFlow) this.state.isIngesting = false;
             return;
         }
 
@@ -234,6 +241,7 @@ class PopupController {
     async executeCloudGlobalSearch(query, targetYear = null, isAutoFlow = false) {
         if (!query || !query.trim()) {
             this.state.searchResults = [];
+            if (isAutoFlow) this.state.isIngesting = false;
             return;
         }
 
@@ -249,6 +257,7 @@ class PopupController {
             this.autoSelectExactMetadataMatch(matches, targetYear, query, isAutoFlow);
         } catch (e) {
             this.state.searchResults = [];
+            if (isAutoFlow) this.state.isIngesting = false;
         }
     }
 
@@ -259,6 +268,7 @@ class PopupController {
         if (!results || results.length === 0) {
             this.state.searchResults = [];
             this.state.selectedMeta = null;
+            if (isAutoFlow) this.state.isIngesting = false;
             return;
         }
 
@@ -306,9 +316,16 @@ class PopupController {
             }
         } else {
             this.state.selectedMeta = null;
+            if (isAutoFlow) this.state.isIngesting = false;
         }
     }
     async executeUplinkIngestCommand() {
+        // Manual entry point (EXECUTE INGEST button): guard against a stray
+        // double-click while a request is already in flight. The automatic
+        // flow reaches this point with isIngesting already `true` (set by
+        // initializeSequence), which is expected and must proceed.
+        this.state.isIngesting = true;
+
         try {
             let targetUrl = this.state.selectedVideo.url;
 
@@ -340,15 +357,59 @@ class PopupController {
                 payload.episode = parseInt(this.state.episode);
             }
 
-            await this.executeAuthenticatedFetch("/download/url", {
+            const response = await this.executeAuthenticatedFetch("/download/url", {
                 method: "POST",
                 body: JSON.stringify(payload)
             });
 
-            this.state.view = "success";
+            const downloadId = response?.downloadId;
+            const finalState = downloadId ? await this.pollDownloadStatus(downloadId) : null;
+
+            if (finalState?.status === "failed") {
+                alert(`Ingest Failed: ${finalState.error || "Server reported a failure."}`);
+                this.state.view = "search";
+                return;
+            }
+
+            if (finalState?.status === "completed") {
+                this.state.view = "success";
+                return;
+            }
+
+            // Still pending/downloading after the initial check window - hand off
+            // to the live Tasks view instead of lying about a finished transfer.
+            this.state.view = "tasks";
         } catch (e) {
             alert(`Ingest Failed: ${e.message}`);
+        } finally {
+            this.state.isIngesting = false;
         }
+    }
+
+    dismissVideo(video) {
+        chrome.runtime.sendMessage({ action: "dismiss_video", key: video.key }, () => {
+            this.state.videos = this.state.videos.filter(v => v.key !== video.key);
+        });
+    }
+
+    /**
+     * Briefly polls the server-side download state so we can surface an
+     * immediate failure (e.g. blocked/hotlink-protected source) instead of
+     * unconditionally declaring success right after the POST is accepted.
+     */
+    async pollDownloadStatus(downloadId, attempts = 5, intervalMs = 1000) {
+        for (let i = 0; i < attempts; i++) {
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            try {
+                const state = await this.executeAuthenticatedFetch(`/download/${downloadId}/status`);
+                if (state?.status === "completed" || state?.status === "failed") {
+                    return state;
+                }
+            } catch (e) {
+                // Transient poll failure - keep trying for the remaining attempts.
+            }
+        }
+        return null;
     }
 }
 

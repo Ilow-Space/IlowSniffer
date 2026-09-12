@@ -22,6 +22,11 @@ class BackgroundController {
         // Per-tab dynamic network media traffic counters
         this.tabMediaCounts = {};
 
+        // Per-tab season/episode reported by a Kodik player iframe (see
+        // ContentScraper.watchKodikSeasonEpisode) - the top frame has no
+        // visibility into that cross-origin frame's own DOM.
+        this.kodikEpisodeByTab = {};
+
         this.initListeners();
         this.initCachePruner();
     }
@@ -42,10 +47,12 @@ class BackgroundController {
         chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
             if (changeInfo.status === "loading") {
                 this.tabMediaCounts[tabId] = { video: 0, image: 0, audio: 0, urls: new Set() };
+                delete this.kodikEpisodeByTab[tabId];
             }
         });
         chrome.tabs.onRemoved.addListener((tabId) => {
             delete this.tabMediaCounts[tabId];
+            delete this.kodikEpisodeByTab[tabId];
         });
 
         // 2. Intercept Outbound Network Header Metadata
@@ -64,7 +71,7 @@ class BackgroundController {
 
         // 4. Central Messages Coordination Router
         chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-            this.handleIncomingRuntimeMessages(request, sendResponse);
+            this.handleIncomingRuntimeMessages(request, sender, sendResponse);
             return true; // Keep channel open for asynchronous responses
         });
 
@@ -200,6 +207,16 @@ class BackgroundController {
                                 if (chrome.runtime.lastError) return;
 
                                 if (res && res.data) {
+                                    // Merge in season/episode reported separately by a
+                                    // cross-origin Kodik player iframe, if we've seen one
+                                    // for this tab (see "kodik_episode_detected" above).
+                                    const kodikInfo = this.kodikEpisodeByTab[details.tabId];
+                                    if (kodikInfo) {
+                                        res.data.mediaType = "tv";
+                                        res.data.season = kodikInfo.season;
+                                        res.data.episode = kodikInfo.episode;
+                                    }
+
                                     this.storageRepo.updateCapturedVideos((vMap) => {
                                         if (vMap[baseUniqueKey]) {
                                             vMap[baseUniqueKey].heuristics = res.data;
@@ -230,7 +247,29 @@ class BackgroundController {
         }
     }
 
-    async handleIncomingRuntimeMessages(req, sendResponse) {
+    async handleIncomingRuntimeMessages(req, sender, sendResponse) {
+
+        if (req.action === "kodik_episode_detected") {
+            const tabId = sender.tab?.id;
+            if (tabId) {
+                this.kodikEpisodeByTab[tabId] = { season: req.season, episode: req.episode };
+
+                // Back-fill in case this Kodik iframe update arrives after we
+                // already computed and stored this video's page heuristics.
+                await this.storageRepo.updateCapturedVideos((vMap) => {
+                    for (const key in vMap) {
+                        const asset = vMap[key];
+                        if (asset.tabId === tabId && asset.heuristics) {
+                            asset.heuristics.mediaType = "tv";
+                            asset.heuristics.season = req.season;
+                            asset.heuristics.episode = req.episode;
+                        }
+                    }
+                    return vMap;
+                });
+            }
+            return;
+        }
 
         if (req.action === "delayed_metadata_capture") {
             // Acknowledge the delayed metadata from sleeping video elements
@@ -324,6 +363,15 @@ class BackgroundController {
         if (req.action === "clear_videos") {
             await chrome.storage.session.set({ [Config.STORAGE.CAPTURED_VIDEOS]: {} });
             sendResponse({ success: true });
+        }
+
+        if (req.action === "dismiss_video") {
+            await this.storageRepo.updateCapturedVideos((videosMap) => {
+                delete videosMap[req.key];
+                return videosMap;
+            });
+            sendResponse({ success: true });
+            return;
         }
 
         if (req.action === "download_video") {

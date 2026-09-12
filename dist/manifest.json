@@ -27,7 +27,7 @@
   "content_scripts": [
     {
       "js": [
-        "assets/ContentScraper.js-loader-CrjXpbAN.js"
+        "assets/ContentScraper.js-loader-C0YaQjnX.js"
       ],
       "matches": [
         "<all_urls>",
@@ -52,7 +52,7 @@
       "resources": [
         "assets/ThumbnailGenerator-ChOvWGFT.js",
         "assets/Config-DHCPwQGR.js",
-        "assets/ContentScraper.js-BMOBUaIt.js"
+        "assets/ContentScraper.js-CtWVfymz.js"
       ],
       "use_dynamic_url": false
     }

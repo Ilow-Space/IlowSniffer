@@ -1,4 +1,5 @@
 import { HdrezkaStrategy } from "./strategies/HdrezkaStrategy.js";
+import { YummyAnimeStrategy } from "./strategies/YummyAnimeStrategy.js";
 
 /**
  * Orchestrator for domain-specific DOM metadata extraction.
@@ -9,7 +10,8 @@ export class MetadataHeuristicsEngine {
      */
     static getStrategies() {
         return [
-            new HdrezkaStrategy()
+            new HdrezkaStrategy(),
+            new YummyAnimeStrategy()
             // Add future strategies here (e.g., NetflixStrategy, YoutubeStrategy)
         ];
     }
