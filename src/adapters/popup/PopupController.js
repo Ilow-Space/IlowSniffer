@@ -330,15 +330,17 @@ class PopupController {
         try {
             let targetUrl = this.state.selectedVideo.url;
 
-            // The ":hls:manifest.m3u8" suffix is a purely internal marker BackgroundController
-            // appends when it reconstructs a manifest URL from segment-request patterns (see
-            // handleHeadersReceived's isSpecialSegment handling) - it is never a real path.
-            // Stripping it recovers the actual, directly-playable file URL. This used to only
-            // run for voidboost/rezka, but the same marker shows up for any CDN that fakes HLS
-            // via range-request "segments" (e.g. Kodik's solodcdn) - left in place, the server
-            // misreads the garbage ".../720.mp4:hls:manifest.m3u8" path as a real HLS manifest
-            // and every segment fetch fails.
-            targetUrl = targetUrl.replace(/:hls:manifest\.m3u8$/i, "");
+            // CORRECTION: this used to be stripped unconditionally, on the theory that
+            // ":hls:manifest.m3u8" was always a garbage internal marker. Verified via a
+            // live webRequest capture that it is NOT garbage for Kodik/solodcdn - the CDN
+            // actually serves a real, valid HLS manifest (200, text/plain playlist body)
+            // at that exact suffixed path; the *stripped* ".../720.mp4" is what returns
+            // 500 (confirmed independently, it isn't a directly-fetchable resource at
+            // all for this CDN). Only voidboost/rezka wrap an already-direct MP4 URL in
+            // this same-looking suffix, so only strip it there.
+            if (targetUrl.includes("voidboost") || targetUrl.includes("rezka")) {
+                targetUrl = targetUrl.replace(/:hls:manifest\.m3u8$/i, "");
+            }
 
             let dynamicName = this.state.selectedMeta.title || this.state.selectedMeta.name;
             if (this.state.mediaType === "tv") {

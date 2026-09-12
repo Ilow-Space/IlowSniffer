@@ -23,7 +23,15 @@ export class DnrRuleManager {
 
         try {
             const urlObj = new URL(targetUrl); //
-            const domain = urlObj.hostname; //
+            // Use the base registrable domain (last two labels), not the exact
+            // hostname: many CDNs load-balance/redirect across sibling
+            // subdomains (e.g. p13.solodcdn.com -> p14.solodcdn.com), and "||"
+            // in a DNR urlFilter only matches a domain and ITS subdomains, not
+            // sibling subdomains - matching just the captured hostname meant
+            // the header impersonation silently stopped applying the moment
+            // the CDN redirected to a different edge node.
+            const hostParts = urlObj.hostname.split(".");
+            const domain = hostParts.length > 2 ? hostParts.slice(-2).join(".") : urlObj.hostname; //
 
             const forbiddenHeaders = ["content-length", "host", "connection", "accept-encoding"]; //
 
