@@ -326,8 +326,23 @@ class BackgroundController {
                     if (currentAsset.headers) existingAsset.headers = currentAsset.headers;
                     if (currentAsset.serverFilename) existingAsset.serverFilename = currentAsset.serverFilename;
 
-                    // Ensure heuristics carry over during link deduplication
-                    if (currentAsset.heuristics) existingAsset.heuristics = currentAsset.heuristics;
+                    // Ensure heuristics carry over during link deduplication, but never
+                    // regress an already-resolved season/episode (e.g. Kodik-backfilled -
+                    // see kodik_episode_detected above): the re-captured duplicate's own
+                    // heuristics come from a fresh top-frame extraction that hasn't been
+                    // backfilled yet, so a blind overwrite here was wiping out season/
+                    // episode every time the same stream got re-captured under a new URL
+                    // (which happens routinely as HLS manifests get freshly re-signed).
+                    if (currentAsset.heuristics) {
+                        const resolvedSeason = existingAsset.heuristics?.season;
+                        const resolvedEpisode = existingAsset.heuristics?.episode;
+                        existingAsset.heuristics = { ...currentAsset.heuristics };
+                        if (resolvedSeason && resolvedEpisode) {
+                            existingAsset.heuristics.mediaType = "tv";
+                            existingAsset.heuristics.season = resolvedSeason;
+                            existingAsset.heuristics.episode = resolvedEpisode;
+                        }
+                    }
 
                     existingAsset.capturedAt = Date.now(); // Prioritize latest timeline
 
@@ -399,6 +414,7 @@ class BackgroundController {
             if (job) {
                 job.status = req.status;
                 job.progress = req.progress;
+                if (req.uploadId) job.uploadId = req.uploadId;
             }
             return;
         }

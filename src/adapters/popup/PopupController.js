@@ -384,7 +384,11 @@ class PopupController {
                 meta
             });
 
-            this.state.view = "tasks";
+            // Back to the streams list, not the queue - the whole point of
+            // queueing is to let the user immediately keep browsing/queueing
+            // more without extra navigation. Progress is visible any time via
+            // the Tasks tab.
+            this.state.view = "list";
         } catch (e) {
             alert(`Ingest Failed: ${e.message}`);
         }

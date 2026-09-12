@@ -224,8 +224,11 @@
       <div class="flex-1 overflow-y-auto pr-0.5 space-y-2 pb-2 min-h-0">
         <div v-if="controller.state.relayQueue.length === 0 && controller.state.tasks.length === 0" class="text-center py-8 text-zinc-600 font-mono text-[10px] bg-zinc-950/20 border border-zinc-900 border-dashed rounded-lg">// QUEUE_EMPTY</div>
 
-        <!-- Browser-relay ingests: local fetch/assembly -> upload -> server-side optimize -->
-        <div v-for="job in controller.state.relayQueue" :key="'relay-' + job.id" class="panel-card p-3 shadow-sm">
+        <!-- Browser-relay ingests: local fetch/assembly stage only. Once uploading
+             starts, the server is tracking this same job itself (matched by
+             uploadId) with real byte-level progress, so it shows via the
+             task list below instead of a second, less-accurate card here. -->
+        <div v-for="job in controller.state.relayQueue.filter(j => j.status !== 'uploading' && j.status !== 'optimizing')" :key="'relay-' + job.id" class="panel-card p-3 shadow-sm">
           <div class="flex justify-between items-start mb-2.5">
             <div class="flex-1 min-w-0 pr-2">
               <div class="flex items-center gap-1.5 mb-1">
@@ -236,17 +239,17 @@
             <span class="text-[8px] font-bold px-1.5 py-0.5 border rounded uppercase tracking-wider font-mono shadow-sm"
                   :class="job.status === 'completed' ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/5' : job.status === 'failed' ? 'border-red-500/40 text-red-400 bg-red-500/5' : 'border-blue-500/40 text-blue-400 bg-blue-500/5'"
                   :title="job.status === 'failed' ? job.error : ''">
-              {{ job.status === 'downloading' ? 'DOWNLOADING' : job.status === 'uploading' ? 'UPLOADING' : job.status === 'optimizing' ? 'OPTIMIZING' : job.status.toUpperCase() }}
+              {{ job.status === 'downloading' ? 'DOWNLOADING' : job.status.toUpperCase() }}
             </span>
           </div>
           <div class="h-1 w-full bg-zinc-900 border border-zinc-800/40 rounded overflow-hidden">
             <div class="h-full transition-all duration-300"
-                 :class="[job.status === 'completed' ? 'bg-emerald-500' : job.status === 'failed' ? 'bg-red-500' : 'bg-blue-500', job.status === 'optimizing' && 'animate-pulse']"
-                 :style="{ width: (job.status === 'optimizing' ? 100 : (job.status === 'completed' ? 100 : (job.progress || 0))) + '%' }"></div>
+                 :class="job.status === 'completed' ? 'bg-emerald-500' : job.status === 'failed' ? 'bg-red-500' : 'bg-blue-500'"
+                 :style="{ width: (job.status === 'completed' ? 100 : (job.progress || 0)) + '%' }"></div>
           </div>
         </div>
 
-        <div v-for="task in controller.state.tasks" :key="task.downloadId" class="panel-card p-3 shadow-sm">
+        <div v-for="task in controller.state.tasks" :key="task.downloadId || task.uploadId" class="panel-card p-3 shadow-sm">
           <div class="flex justify-between items-start mb-2.5">
             <div class="flex-1 min-w-0 pr-2">
               <div class="flex items-center gap-1.5 mb-1">
@@ -328,8 +331,18 @@ export default {
     },
     calculateTaskProgress(task) {
       if (task.status === "completed") return 100;
+      if (task.status === "optimizing") {
+        // MediaHost repurposes bytesReceived to hold a 0-100 percentage during
+        // server-side ffmpeg optimization, not a byte count relative to
+        // totalSize (see FinalizeUpload's progress callback).
+        return Math.max(0, Math.min(100, task.bytesReceived || 0));
+      }
+      // Download tasks report bytesDownloaded; upload tasks report
+      // bytesReceived - both are real byte counts here (optimizing is
+      // handled above).
+      const received = task.bytesDownloaded ?? task.bytesReceived ?? 0;
       if (task.totalSize > 0) {
-        return Math.round((task.bytesDownloaded / task.totalSize) * 100);
+        return Math.round((received / task.totalSize) * 100);
       }
       return 0;
     },

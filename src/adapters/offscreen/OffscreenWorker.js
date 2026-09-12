@@ -187,8 +187,8 @@ class OffscreenWorker {
      * progress messages can be routed to the right queue item.
      */
     async processRelayIngest(url, headers, meta, jobId, sendResponse) {
-        const reportStage = (status, progress) => {
-            chrome.runtime.sendMessage({ action: "relay_progress", jobId, status, progress }).catch(() => { });
+        const reportStage = (status, progress, uploadId) => {
+            chrome.runtime.sendMessage({ action: "relay_progress", jobId, status, progress, uploadId }).catch(() => { });
         };
 
         try {
@@ -201,10 +201,16 @@ class OffscreenWorker {
                 : await this.fetchDirectFileBlob(url, headers);
 
             const accessCode = await this.uploadBlobToServer(blob, meta, {
-                onUploadProgress: (sent, total) => {
-                    reportStage("uploading", total > 0 ? Math.round((sent / total) * 100) : 0);
+                // Once the server has issued an uploadId, it's tracking this job
+                // itself (visible via /api/tasks/active with real byte-level
+                // upload progress and real ffmpeg optimize progress) - report it
+                // so the popup can switch from our own placeholder card to the
+                // server-tracked one instead of showing both.
+                onUploadIdKnown: (uploadId) => reportStage("uploading", 0, uploadId),
+                onUploadProgress: (sent, total, uploadId) => {
+                    reportStage("uploading", total > 0 ? Math.round((sent / total) * 100) : 0, uploadId);
                 },
-                onOptimizing: () => reportStage("optimizing", null)
+                onOptimizing: (uploadId) => reportStage("optimizing", null, uploadId)
             });
 
             sendResponse({ success: true, accessCode });
@@ -223,7 +229,7 @@ class OffscreenWorker {
         return await response.blob();
     }
 
-    async uploadBlobToServer(blob, meta, { onUploadProgress, onOptimizing } = {}) {
+    async uploadBlobToServer(blob, meta, { onUploadIdKnown, onUploadProgress, onOptimizing } = {}) {
         const initResponse = await fetch(`${Config.API.BASE_URL}/upload/initiate`, {
             method: "POST",
             credentials: "include",
@@ -241,6 +247,7 @@ class OffscreenWorker {
             throw new Error(`Upload initiate failed - Status: ${initResponse.status}`);
         }
         const { uploadId } = await initResponse.json();
+        if (onUploadIdKnown) onUploadIdKnown(uploadId);
 
         const chunkSize = 5 * 1024 * 1024;
         let offset = 0;
@@ -259,13 +266,13 @@ class OffscreenWorker {
             }
 
             offset = end;
-            if (onUploadProgress) onUploadProgress(offset, blob.size);
+            if (onUploadProgress) onUploadProgress(offset, blob.size, uploadId);
         }
 
         // The server marks this upload "optimizing" (internal.storage.Store) and
         // runs ffmpeg CMAF repackaging synchronously before this call resolves -
         // this is our one hook to reflect that stage locally.
-        if (onOptimizing) onOptimizing();
+        if (onOptimizing) onOptimizing(uploadId);
 
         const completeResponse = await fetch(`${Config.API.BASE_URL}/upload/${uploadId}/complete`, {
             method: "POST",
