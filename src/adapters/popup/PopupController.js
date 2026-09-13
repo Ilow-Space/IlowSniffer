@@ -95,7 +95,7 @@ class PopupController {
      */
     activeTaskCount() {
         const localOnly = this.state.relayQueue.filter(
-            (j) => j.status === "queued" || j.status === "downloading"
+            (j) => j.status === "queued" || j.status === "checking" || j.status === "downloading"
         ).length;
         return localOnly + this.state.tasks.length;
     }
@@ -345,19 +345,12 @@ class PopupController {
     }
     async executeUplinkIngestCommand() {
         try {
-            let targetUrl = this.state.selectedVideo.url;
-
-            // CORRECTION: this used to be stripped unconditionally, on the theory that
-            // ":hls:manifest.m3u8" was always a garbage internal marker. Verified via a
-            // live webRequest capture that it is NOT garbage for Kodik/solodcdn - the CDN
-            // actually serves a real, valid HLS manifest (200, text/plain playlist body)
-            // at that exact suffixed path; the *stripped* ".../720.mp4" is what returns
-            // 500 (confirmed independently, it isn't a directly-fetchable resource at
-            // all for this CDN). Only voidboost/rezka wrap an already-direct MP4 URL in
-            // this same-looking suffix, so only strip it there.
-            if (targetUrl.includes("voidboost") || targetUrl.includes("rezka")) {
-                targetUrl = targetUrl.replace(/:hls:manifest\.m3u8$/i, "");
-            }
+            // Pass the URL through as captured - untruncated. Whether/how to try
+            // a truncated (voidboost/rezka direct-MP4) variant is now a strategy
+            // decision the background's queue processor makes per attempt (see
+            // BackgroundController.getServerOffloadUrlVariants), not something
+            // baked in here before we even know which transport will be used.
+            const targetUrl = this.state.selectedVideo.url;
 
             let dynamicName = this.state.selectedMeta.title || this.state.selectedMeta.name;
             if (this.state.mediaType === "tv") {
@@ -379,17 +372,16 @@ class PopupController {
                 meta.episode = parseInt(this.state.episode);
             }
 
-            // Relay via the browser instead of asking the server to fetch the URL
-            // itself: many sources (e.g. Kodik's solodcdn) bind the signed URL to
-            // the requesting IP, so a server-side fetch gets rejected even with
-            // the right headers/cookies - only the browser that already has a
-            // working connection can actually pull the bytes. The offscreen
-            // document does the fetch/HLS-assembly and uploads the result via
-            // MediaHost's existing resumable upload API.
-            //
-            // This just enqueues the job and returns immediately - the background
-            // queue (BackgroundController.processRelayQueue) runs it, so triggering
+            // Hand off to the background queue and return immediately - triggering
             // another ingest right away queues it instead of blocking on this one.
+            // The queue itself decides HOW to fetch it: server-side offload
+            // (letting MediaHost fetch the URL directly - efficient, no browser
+            // bandwidth spent) is tried first, since it works fine for most
+            // sources; browser-relay (fetch in the browser, upload the bytes -
+            // needed for sources like Kodik's solodcdn that bind the signed URL
+            // to the requesting IP, so a server-side fetch always gets rejected)
+            // is only used once offload attempts fail. See
+            // BackgroundController.processRelayQueue/tryServerOffload.
             // Progress/stage is shown in the Tasks view via state.relayQueue.
             chrome.runtime.sendMessage({
                 action: "enqueue_relay_ingest",

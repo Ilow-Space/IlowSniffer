@@ -550,6 +550,76 @@ class BackgroundController {
     }
 
     /**
+     * Server-side offload (MediaHost fetching the URL itself via /download/url)
+     * is far more efficient than browser-relay when it works - no browser
+     * bandwidth spent re-uploading what was just downloaded - so it's always
+     * tried first. voidboost/rezka wrap an already-direct MP4 URL in the same
+     * ":hls:manifest.m3u8" marker Kodik uses for a real manifest (see
+     * PopupController's old truncation comment); for THOSE two sites the
+     * truncated (direct MP4) form is the more likely one to work standalone,
+     * so try it before falling back to the untruncated original. Any other
+     * site just gets the one, untruncated URL.
+     */
+    getServerOffloadUrlVariants(url) {
+        if (url.includes("voidboost") || url.includes("rezka")) {
+            const truncated = url.replace(/:hls:manifest\.m3u8$/i, "");
+            if (truncated !== url) return [truncated, url];
+        }
+        return [url];
+    }
+
+    /**
+     * Kicks off a server-side /download/url fetch and does a bounded health
+     * check - NOT a full-completion wait, since a legitimately slow (but
+     * working) transfer/optimize can take minutes. Bails out fast on a
+     * definitive failure; on any real sign of life (bytes actually flowing, or
+     * having reached the post-download "optimizing" stage) trusts the server
+     * to finish the rest on its own and hands off display duty to the normal
+     * /api/tasks/active polling. Only a source that produces zero progress for
+     * the whole check window is treated as "offload not supported here".
+     */
+    async tryServerOffload(url, meta, headers) {
+        try {
+            const initRes = await fetch(`${Config.API.BASE_URL}/download/url`, {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    url,
+                    tmdbId: meta.tmdbId,
+                    mediaType: meta.mediaType,
+                    season: meta.season || 0,
+                    episode: meta.episode || 0,
+                    originalName: meta.fileName,
+                    headers: headers || {}
+                })
+            });
+            if (!initRes.ok) return false;
+            const { downloadId } = await initRes.json();
+            if (!downloadId) return false;
+
+            const CHECK_ATTEMPTS = 10;
+            const CHECK_INTERVAL_MS = 2000;
+            for (let i = 0; i < CHECK_ATTEMPTS; i++) {
+                await new Promise((resolve) => setTimeout(resolve, CHECK_INTERVAL_MS));
+
+                const statusRes = await fetch(`${Config.API.BASE_URL}/download/${downloadId}/status`, {
+                    credentials: "include"
+                });
+                if (!statusRes.ok) continue;
+                const state = await statusRes.json();
+
+                if (state.status === "completed") return true;
+                if (state.status === "failed") return false;
+                if (state.status === "optimizing" || state.bytesDownloaded > 0) return true;
+            }
+            return false; // no progress within the check window - treat as unsupported
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
      * Drains this.relayQueue sequentially, one job at a time. Re-entrant calls
      * (from enqueue_relay_ingest while a job is already running) are no-ops -
      * the currently-running loop will pick up the newly queued job itself.
@@ -562,6 +632,32 @@ class BackgroundController {
             let job;
             while ((job = this.relayQueue.find((j) => j.status === "queued"))) {
                 try {
+                    job.status = "checking";
+                    let offloaded = false;
+                    for (const variant of this.getServerOffloadUrlVariants(job.url)) {
+                        if (await this.tryServerOffload(variant, job.meta, job.headers)) {
+                            offloaded = true;
+                            break;
+                        }
+                    }
+
+                    if (offloaded) {
+                        // MediaHost is fetching it directly from here - tracked via
+                        // the normal /api/tasks/active polling from this point on,
+                        // not this queue entry (see Popup.vue's status filter).
+                        job.status = "offloaded";
+                        job.finishedAt = Date.now();
+                        continue;
+                    }
+
+                    // Offload didn't pan out for any URL variant - fall back to
+                    // relaying the ORIGINAL (untruncated) URL through the browser;
+                    // the offscreen HLS assembly needs the real manifest URL and is
+                    // unaffected by the voidboost/rezka truncation above, which only
+                    // ever mattered for a standalone server-side fetch.
+                    job.status = "downloading";
+                    job.progress = 0;
+
                     // Referer/Origin/User-Agent can't be set from a plain fetch() in
                     // the offscreen document (forbidden headers, silently dropped) -
                     // only declarativeNetRequest (background-only) can inject them at
@@ -589,7 +685,9 @@ class BackgroundController {
                     job.error = e.message;
                 } finally {
                     await this.dnrManager.clearImpersonationRules();
-                    job.finishedAt = Date.now();
+                    if (!job.finishedAt && (job.status === "completed" || job.status === "failed")) {
+                        job.finishedAt = Date.now();
+                    }
                 }
             }
         } finally {

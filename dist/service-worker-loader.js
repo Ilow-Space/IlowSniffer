@@ -1,1 +1,1 @@
-import './assets/BackgroundController.js-6fRteiST.js';
+import './assets/BackgroundController.js-CUR-YhKP.js';

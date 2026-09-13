@@ -228,7 +228,7 @@
              starts, the server is tracking this same job itself (matched by
              uploadId) with real byte-level progress, so it shows via the
              task list below instead of a second, less-accurate card here. -->
-        <div v-for="job in controller.state.relayQueue.filter(j => j.status !== 'uploading' && j.status !== 'optimizing')" :key="'relay-' + job.id" class="panel-card p-3 shadow-sm">
+        <div v-for="job in controller.state.relayQueue.filter(j => j.status !== 'uploading' && j.status !== 'optimizing' && j.status !== 'offloaded')" :key="'relay-' + job.id" class="panel-card p-3 shadow-sm">
           <div class="flex justify-between items-start mb-2.5">
             <div class="flex-1 min-w-0 pr-2">
               <div class="flex items-center gap-1.5 mb-1">
