@@ -575,12 +575,18 @@ class BackgroundController {
      * so try it before falling back to the untruncated original. Any other
      * site just gets the one, untruncated URL.
      */
-    getServerOffloadUrlVariants(url) {
-        if (url.includes("voidboost") || url.includes("rezka")) {
-            const truncated = url.replace(/:hls:manifest\.m3u8$/i, "");
-            if (truncated !== url) return [truncated, url];
-        }
-        return [url];
+    // The CDN host varies (voidboost, voidslam, ...), so also match the page
+    // Referer ("standby-rezka.tv") that was captured with the request.
+    isRezkaFamily(url, headers) {
+        return /voidboost|voidslam|rezka/i.test(url + JSON.stringify(headers || {}));
+    }
+
+    getServerOffloadUrlVariants(url, headers) {
+        // Heuristic: ".mp4" right before the ":hls:manifest.m3u8" marker means the
+        // marker was just appended to a direct MP4, on any host - try the MP4 first,
+        // then the original in case it really is a manifest.
+        const truncated = url.replace(/(\.mp4):hls:manifest\.m3u8$/i, "$1");
+        return truncated !== url ? [truncated, url] : [url];
     }
 
     /**
@@ -652,10 +658,10 @@ class BackgroundController {
                     // rezka/voidboost: a bare URL (what pasting the link by hand sends)
                     // works, while forwarding the captured browser headers (Cookie,
                     // sec-fetch-*, ...) can make the CDN reject the server's fetch.
-                    const bareFirst = /voidboost|rezka/.test(job.url);
+                    const bareFirst = this.isRezkaFamily(job.url, job.headers);
                     const headerSets = bareFirst ? [{}, job.headers] : [job.headers];
                     offload:
-                    for (const variant of this.getServerOffloadUrlVariants(job.url)) {
+                    for (const variant of this.getServerOffloadUrlVariants(job.url, job.headers)) {
                         for (const hdrs of headerSets) {
                             if (await this.tryServerOffload(variant, job.meta, hdrs)) {
                                 offloaded = true;
