@@ -54,6 +54,21 @@ class BackgroundController {
                 .catch((err) => console.error("[Background Init] Sidepanel failure:", err));
         });
 
+        // The installer unpacks new files + version.txt into this extension's folder;
+        // an unpacked extension doesn't notice, so reload when version.txt changes.
+        chrome.alarms.create("installer-update-check", { periodInMinutes: 5 });
+        chrome.alarms.onAlarm.addListener(async (alarm) => {
+            if (alarm.name !== "installer-update-check") return;
+            try {
+                const res = await fetch(chrome.runtime.getURL("version.txt"));
+                if (!res.ok) return;
+                const version = (await res.text()).trim();
+                const { installedVersion } = await chrome.storage.local.get("installedVersion");
+                await chrome.storage.local.set({ installedVersion: version });
+                if (installedVersion && installedVersion !== version) chrome.runtime.reload();
+            } catch (e) { /* no version.txt (dev build) - nothing to do */ }
+        });
+
         // Clear per-tab media request counters on navigation/tab closing
         chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
             if (changeInfo.status === "loading") {
@@ -634,10 +649,18 @@ class BackgroundController {
                 try {
                     job.status = "checking";
                     let offloaded = false;
+                    // rezka/voidboost: a bare URL (what pasting the link by hand sends)
+                    // works, while forwarding the captured browser headers (Cookie,
+                    // sec-fetch-*, ...) can make the CDN reject the server's fetch.
+                    const bareFirst = /voidboost|rezka/.test(job.url);
+                    const headerSets = bareFirst ? [{}, job.headers] : [job.headers];
+                    offload:
                     for (const variant of this.getServerOffloadUrlVariants(job.url)) {
-                        if (await this.tryServerOffload(variant, job.meta, job.headers)) {
-                            offloaded = true;
-                            break;
+                        for (const hdrs of headerSets) {
+                            if (await this.tryServerOffload(variant, job.meta, hdrs)) {
+                                offloaded = true;
+                                break offload;
+                            }
                         }
                     }
 

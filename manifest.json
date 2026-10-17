@@ -14,7 +14,8 @@
     "offscreen",
     "downloads",
     "declarativeNetRequest",
-    "sidePanel"
+    "sidePanel",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>",
